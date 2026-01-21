@@ -1,0 +1,3 @@
+nsfw model download link -> https://huggingface.co/allenai/dolma-jigsaw-fasttext-bigrams-nsfw/tree/main
+hatespeech model download -> https://huggingface.co/allenai/dolma-jigsaw-fasttext-bigrams-hatespeech
+model for language classification -> https://dl.fbaipublicfiles.com/fasttext/supervised-models/lid.176.bin

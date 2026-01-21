@@ -173,17 +173,3 @@ def process_parquet_html_to_text(
     print(f"Output files created:    {stats['output_files']}")
     
     return stats
-
-
-if __name__ == "__main__":
-    # Example usage for processing The Pile dataset
-    INPUT_GLOB = "/data3/dataset/the_pile_deduplicated/data/train-*-of-01650-*.parquet"
-    OUTPUT_DIR = "/home2/mehulag022/processed_data_extracted"
-    
-    stats = process_parquet_html_to_text(
-        input_glob=INPUT_GLOB,
-        output_dir=OUTPUT_DIR,
-        text_column="text",
-        batch_size=1000,
-        compression="zstd",
-    )

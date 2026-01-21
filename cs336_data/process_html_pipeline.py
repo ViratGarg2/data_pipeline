@@ -1,9 +1,10 @@
 """
-HTML to Text Processing Pipeline with Language Identification
+HTML to Text Processing Pipeline with Language Identification and PII Masking
 
 This script processes parquet files containing text data, detects HTML content,
 extracts plain text from HTML using the extract_text_from_html_bytes function,
-identifies the language using FastText, and outputs processed data to new parquet files.
+identifies the language using FastText, masks PII (emails, phones, IPs),
+and outputs processed data to new parquet files.
 
 Usage:
     python -m cs336_data.process_html_pipeline
@@ -26,15 +27,21 @@ from tqdm import tqdm
 try:
     from cs336_data.extract import extract_text_from_html_bytes
     from cs336_data.langid import identify_language, get_language_name
+    from cs336_data.pii_masking import mask_all_pii
+    from cs336_data.toxicity import classify_nsfw, classify_toxic_speech, classify_content
+    from cs336_data import config
 except ModuleNotFoundError:
     # When running directly from the cs336_data directory
+    import config
     from extract import extract_text_from_html_bytes
     from langid import identify_language, get_language_name
+    from pii_masking import mask_all_pii
+    from toxicity import classify_nsfw, classify_toxic_speech, classify_content
 
 
 # ---------------- CONFIG ----------------
-INPUT_GLOB = "/data3/dataset/the_pile_deduplicated/data/train-*-of-01650-*.parquet"
-OUTPUT_DIR = "/home2/mehulag022/processed_data_html_extracted_lang"
+INPUT_GLOB = config.INPUT_GLOB
+OUTPUT_DIR = config.OUTPUT_DIR
 TEXT_COLUMN = "text"
 BATCH_SIZE = 1000
 COMPRESSION = "zstd"
@@ -88,9 +95,12 @@ def process_single_file(
     batch_size: int = 1000,
     compression: str = "zstd",
     enable_langid: bool = True,
+    enable_pii_masking: bool = True,
+    enable_content_classification: bool = True,
+    max_rows: int | None = None,
 ) -> dict:
     """
-    Process a single parquet file: detect HTML, extract text, and identify language.
+    Process a single parquet file: detect HTML, extract text, identify language, mask PII, and classify content.
     
     Args:
         input_path: Path to input parquet file
@@ -99,6 +109,9 @@ def process_single_file(
         batch_size: Number of rows to process at once
         compression: Output compression codec
         enable_langid: Whether to perform language identification
+        enable_pii_masking: Whether to mask PII (emails, phones, IPs)
+        enable_content_classification: Whether to classify NSFW and toxic content
+        max_rows: Maximum number of rows to process per file (None for all)
         
     Returns:
         Dictionary with processing statistics for this file
@@ -111,6 +124,18 @@ def process_single_file(
         "html_types": defaultdict(int),
         "languages": defaultdict(int),
         "language_scores": defaultdict(list),
+        "pii_masked": {
+            "emails": 0,
+            "phones": 0,
+            "ips": 0,
+            "total": 0,
+        },
+        "content_classification": {
+            "nsfw": 0,
+            "non_nsfw": 0,
+            "toxic": 0,
+            "non_toxic": 0,
+        },
     }
     
     # Read the parquet file
@@ -124,18 +149,35 @@ def process_single_file(
         return stats
     
     texts = df_dict[text_column]
+    
+    # Limit rows if max_rows is specified (for debugging/testing)
+    if max_rows is not None and max_rows < len(texts):
+        print(f"  Limiting to {max_rows} rows (out of {len(texts)})")
+        texts = texts[:max_rows]
+        # Also limit other columns to match
+        for col in df_dict:
+            df_dict[col] = df_dict[col][:max_rows]
+    
     stats["total_rows"] = len(texts)
     
     # Process each text entry
     processed_texts = []
     detected_languages = []
     language_scores = []
+    nsfw_labels = []
+    nsfw_scores = []
+    toxic_labels = []
+    toxic_scores = []
     
-    for text in texts:
+    for text in tqdm(texts, desc="  Processing rows", unit="rows", leave=False):
         if text is None:
             processed_texts.append(text)
             detected_languages.append(None)
             language_scores.append(0.0)
+            nsfw_labels.append(None)
+            nsfw_scores.append(0.0)
+            toxic_labels.append(None)
+            toxic_scores.append(0.0)
             stats["html_types"]["none"] += 1
             stats["languages"]["none"] += 1
             continue
@@ -156,21 +198,28 @@ def process_single_file(
             extracted = extract_text_from_html_bytes(html_bytes)
             
             if extracted is not None:
-                processed_texts.append(extracted)
+                current_text = extracted
                 stats["html_extracted"] += 1
-                text_for_langid = extracted
             else:
-                processed_texts.append(text)  # Keep original on failure
+                current_text = text  # Keep original on failure
                 stats["extraction_failed"] += 1
-                text_for_langid = text
         else:
             # Not HTML, keep original
-            processed_texts.append(text)
-            text_for_langid = text
+            current_text = text
+        
+        # PII masking (emails, phone numbers, IP addresses)
+        if enable_pii_masking and current_text:
+            current_text, pii_stats = mask_all_pii(current_text)
+            stats["pii_masked"]["emails"] += pii_stats["emails"]
+            stats["pii_masked"]["phones"] += pii_stats["phones"]
+            stats["pii_masked"]["ips"] += pii_stats["ips"]
+            stats["pii_masked"]["total"] += pii_stats["total"]
+        
+        processed_texts.append(current_text)
         
         # Language identification
-        if enable_langid and text_for_langid:
-            lang_code, lang_score = identify_language(text_for_langid)
+        if enable_langid and current_text:
+            lang_code, lang_score = identify_language(current_text)
             detected_languages.append(lang_code)
             language_scores.append(lang_score)
             stats["languages"][lang_code] += 1
@@ -178,12 +227,40 @@ def process_single_file(
         else:
             detected_languages.append(None)
             language_scores.append(0.0)
+        
+        # Content classification (NSFW and toxic speech)
+        if enable_content_classification and current_text:
+            nsfw_label, nsfw_score = classify_nsfw(current_text)
+            toxic_label, toxic_score = classify_toxic_speech(current_text)
+            nsfw_labels.append(nsfw_label)
+            nsfw_scores.append(nsfw_score)
+            toxic_labels.append(toxic_label)
+            toxic_scores.append(toxic_score)
+            # Update stats
+            if nsfw_label == "nsfw":
+                stats["content_classification"]["nsfw"] += 1
+            else:
+                stats["content_classification"]["non_nsfw"] += 1
+            if toxic_label == "toxic":
+                stats["content_classification"]["toxic"] += 1
+            else:
+                stats["content_classification"]["non_toxic"] += 1
+        else:
+            nsfw_labels.append(None)
+            nsfw_scores.append(0.0)
+            toxic_labels.append(None)
+            toxic_scores.append(0.0)
     
     # Update the dictionary with processed texts and language info
     df_dict[text_column] = processed_texts
     if enable_langid:
         df_dict["detected_language"] = detected_languages
         df_dict["language_score"] = language_scores
+    if enable_content_classification:
+        df_dict["nsfw_label"] = nsfw_labels
+        df_dict["nsfw_score"] = nsfw_scores
+        df_dict["toxic_label"] = toxic_labels
+        df_dict["toxic_score"] = toxic_scores
     
     # Write to output parquet - handle NumPy 2.0 compatibility
     # Convert to PyArrow arrays explicitly to avoid copy issues
@@ -191,10 +268,10 @@ def process_single_file(
     names = []
     for key, values in df_dict.items():
         names.append(key)
-        if key == "language_score":
+        if key in ("language_score", "nsfw_score", "toxic_score"):
             # Ensure float array
             arrays.append(pa.array(values, type=pa.float64()))
-        elif key == "detected_language":
+        elif key in ("detected_language", "nsfw_label", "toxic_label"):
             # Ensure string array with nulls
             arrays.append(pa.array(values, type=pa.string()))
         else:
@@ -218,9 +295,12 @@ def run_pipeline(
     max_files: int | None = MAX_FILES,
     start_index: int = START_FILE_INDEX,
     enable_langid: bool = True,
+    enable_pii_masking: bool = True,
+    enable_content_classification: bool = True,
+    max_rows: int | None = 1000,  # DEBUG: Limit rows per file (set to None for all rows)
 ):
     """
-    Run the full HTML extraction and language identification pipeline.
+    Run the full HTML extraction, language identification, PII masking, and content classification pipeline.
     
     Args:
         input_glob: Glob pattern for input parquet files
@@ -231,6 +311,9 @@ def run_pipeline(
         max_files: Maximum number of files to process (None for all)
         start_index: Index of the first file to process (0-based)
         enable_langid: Whether to perform language identification
+        enable_pii_masking: Whether to mask PII (emails, phones, IPs)
+        enable_content_classification: Whether to classify NSFW and toxic content
+        max_rows: Maximum number of rows to process per file (None for all, default: 1000 for debugging)
     """
     # Create output directory
     os.makedirs(output_dir, exist_ok=True)
@@ -257,16 +340,19 @@ def run_pipeline(
         input_files = all_input_files[start_index:]
     
     print("=" * 60)
-    print("HTML to Text Extraction Pipeline with Language ID")
+    print("HTML to Text Extraction Pipeline with Language ID & PII Masking")
     print("=" * 60)
     print(f"Input pattern: {input_glob}")
     print(f"Output directory: {output_dir}")
     print(f"Total files available: {total_available}")
     print(f"Start index: {start_index}")
     print(f"Max files to process: {max_files if max_files else 'ALL'}")
+    print(f"Max rows per file: {max_rows if max_rows else 'ALL'}")
     print(f"Files to process this run: {len(input_files)}")
     print(f"File range: [{start_index} - {start_index + len(input_files) - 1}]")
     print(f"Language identification: {'ENABLED' if enable_langid else 'DISABLED'}")
+    print(f"PII masking: {'ENABLED' if enable_pii_masking else 'DISABLED'}")
+    print(f"Content classification: {'ENABLED' if enable_content_classification else 'DISABLED'}")
     print("=" * 60)
     
     # Aggregate statistics
@@ -278,6 +364,18 @@ def run_pipeline(
         "extraction_failed": 0,
         "html_types": defaultdict(int),
         "languages": defaultdict(int),
+        "pii_masked": {
+            "emails": 0,
+            "phones": 0,
+            "ips": 0,
+            "total": 0,
+        },
+        "content_classification": {
+            "nsfw": 0,
+            "non_nsfw": 0,
+            "toxic": 0,
+            "non_toxic": 0,
+        },
     }
     
     start_time = time.time()
@@ -297,6 +395,9 @@ def run_pipeline(
                 batch_size=batch_size,
                 compression=compression,
                 enable_langid=enable_langid,
+                enable_pii_masking=enable_pii_masking,
+                enable_content_classification=enable_content_classification,
+                max_rows=max_rows,
             )
             
             # Update aggregate statistics
@@ -314,11 +415,35 @@ def run_pipeline(
                 for lang, count in file_stats["languages"].items():
                     total_stats["languages"][lang] += count
             
+            # Aggregate PII stats
+            if enable_pii_masking:
+                total_stats["pii_masked"]["emails"] += file_stats["pii_masked"]["emails"]
+                total_stats["pii_masked"]["phones"] += file_stats["pii_masked"]["phones"]
+                total_stats["pii_masked"]["ips"] += file_stats["pii_masked"]["ips"]
+                total_stats["pii_masked"]["total"] += file_stats["pii_masked"]["total"]
+            
+            # Aggregate content classification stats
+            if enable_content_classification:
+                total_stats["content_classification"]["nsfw"] += file_stats["content_classification"]["nsfw"]
+                total_stats["content_classification"]["non_nsfw"] += file_stats["content_classification"]["non_nsfw"]
+                total_stats["content_classification"]["toxic"] += file_stats["content_classification"]["toxic"]
+                total_stats["content_classification"]["non_toxic"] += file_stats["content_classification"]["non_toxic"]
+            
             # Print file-level stats
             print(f"  Rows: {file_stats['total_rows']:,}")
             print(f"  HTML detected: {file_stats['html_detected']:,}")
             print(f"  Extracted: {file_stats['html_extracted']:,}")
             print(f"  Failed: {file_stats['extraction_failed']:,}")
+            
+            # Print PII masking stats for this file
+            if enable_pii_masking and file_stats["pii_masked"]["total"] > 0:
+                pii = file_stats["pii_masked"]
+                print(f"  PII masked: {pii['total']} (emails:{pii['emails']}, phones:{pii['phones']}, IPs:{pii['ips']})")
+            
+            # Print content classification stats for this file
+            if enable_content_classification:
+                cc = file_stats["content_classification"]
+                print(f"  Content: NSFW:{cc['nsfw']}, Non-NSFW:{cc['non_nsfw']}, Toxic:{cc['toxic']}, Non-Toxic:{cc['non_toxic']}")
             
             # Print top languages for this file
             if enable_langid and file_stats["languages"]:
@@ -347,6 +472,18 @@ def run_pipeline(
     if elapsed > 0:
         print(f"Processing rate:          {total_stats['total_rows'] / elapsed:.2f} rows/sec")
     print()
+    
+    # Print PII masking summary
+    if enable_pii_masking:
+        print("-" * 60)
+        print("PII MASKING SUMMARY")
+        print("-" * 60)
+        pii = total_stats["pii_masked"]
+        print(f"Email addresses masked:   {pii['emails']:,}")
+        print(f"Phone numbers masked:     {pii['phones']:,}")
+        print(f"IP addresses masked:      {pii['ips']:,}")
+        print(f"Total PII masked:         {pii['total']:,}")
+        print()
     
     # Print HTML type breakdown
     print("-" * 60)
@@ -397,6 +534,19 @@ def run_pipeline(
         print("-" * 60)
         print(f"{'TOTAL':<25} {'':<8} {total_lang:>12,} {'100.00':>11}%")
         print(f"Unique languages detected: {len(total_stats['languages'])}")
+    
+    # Print content classification summary
+    if enable_content_classification:
+        print("-" * 60)
+        print("CONTENT CLASSIFICATION SUMMARY")
+        print("-" * 60)
+        cc = total_stats["content_classification"]
+        total_classified = cc["nsfw"] + cc["non_nsfw"]
+        print(f"NSFW content:             {cc['nsfw']:,} ({cc['nsfw']/total_classified*100:.2f}%)" if total_classified > 0 else f"NSFW content:             {cc['nsfw']:,}")
+        print(f"Non-NSFW content:         {cc['non_nsfw']:,} ({cc['non_nsfw']/total_classified*100:.2f}%)" if total_classified > 0 else f"Non-NSFW content:         {cc['non_nsfw']:,}")
+        print(f"Toxic content:            {cc['toxic']:,} ({cc['toxic']/total_classified*100:.2f}%)" if total_classified > 0 else f"Toxic content:            {cc['toxic']:,}")
+        print(f"Non-Toxic content:        {cc['non_toxic']:,} ({cc['non_toxic']/total_classified*100:.2f}%)" if total_classified > 0 else f"Non-Toxic content:        {cc['non_toxic']:,}")
+        print()
     
     print("=" * 60)
     
@@ -456,8 +606,27 @@ if __name__ == "__main__":
         action="store_true",
         help="Disable language identification (faster processing)"
     )
+    parser.add_argument(
+        "--no-pii",
+        action="store_true",
+        help="Disable PII masking (emails, phones, IPs)"
+    )
+    parser.add_argument(
+        "--no-content-classification",
+        action="store_true",
+        help="Disable NSFW and toxic content classification"
+    )
+    parser.add_argument(
+        "--max-rows", "-r",
+        type=int,
+        default=1000,
+        help="Maximum rows to process per file (default: 1000 for debugging, use -1 for all)"
+    )
     
     args = parser.parse_args()
+    
+    # Handle max_rows: -1 means all rows
+    max_rows = None if args.max_rows == -1 else args.max_rows
     
     run_pipeline(
         input_glob=args.input_glob,
@@ -468,4 +637,7 @@ if __name__ == "__main__":
         max_files=args.max_files,
         start_index=args.start_index,
         enable_langid=not args.no_langid,
+        enable_pii_masking=not args.no_pii,
+        enable_content_classification=not args.no_content_classification,
+        max_rows=max_rows,
     )

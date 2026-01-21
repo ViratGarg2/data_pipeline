@@ -1,0 +1,16 @@
+(venv2) (base) mehulag022@gnode005:~/assignment4-data$ pytest tests/test_pii.py -v
+============================================================================================= test session starts =============================================================================================
+platform linux -- Python 3.13.2, pytest-9.0.2, pluggy-1.6.0 -- /home2/mehulag022/venv2/bin/python3
+cachedir: .pytest_cache
+rootdir: /home2/mehulag022/assignment4-data
+configfile: pyproject.toml
+plugins: anyio-4.12.1
+collected 5 items                                                                                                                                                                                             
+
+tests/test_pii.py::test_mask_emails_single PASSED
+tests/test_pii.py::test_mask_emails_multiple PASSED
+tests/test_pii.py::test_mask_emails_existing_string PASSED
+tests/test_pii.py::test_mask_phones_single PASSED
+tests/test_pii.py::test_mask_ips PASSED
+
+============================================================================================== 5 passed in 1.18s ==============================================================================================

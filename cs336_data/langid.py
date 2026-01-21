@@ -96,44 +96,6 @@ def identify_language(text: str, model_path: str | Path | None = None) -> tuple[
     return (language_code, confidence)
 
 
-def identify_language_top_k(
-    text: str, 
-    k: int = 5, 
-    model_path: str | Path | None = None
-) -> list[tuple[str, float]]:
-    """
-    Identify the top-k languages present in the given text.
-    
-    Args:
-        text: Unicode string to identify the language of
-        k: Number of top predictions to return
-        model_path: Optional path to FastText model file
-        
-    Returns:
-        List of tuples (language_code, confidence_score) sorted by confidence
-    """
-    if not text or not isinstance(text, str):
-        return [("unknown", 0.0)]
-    
-    # FastText expects single line input
-    text_clean = text.replace("\n", " ").replace("\r", " ")[:10000]
-    
-    model = _get_model(model_path)
-    
-    predictions = model.predict(text_clean, k=k)
-    
-    if not predictions or not predictions[0]:
-        return [("unknown", 0.0)]
-    
-    results = []
-    for label, prob in zip(predictions[0], predictions[1]):
-        language_code = label.replace("__label__", "")
-        confidence = max(0.0, min(1.0, float(prob)))
-        results.append((language_code, confidence))
-    
-    return results
-
-
 # Language code to name mapping for common languages
 LANGUAGE_NAMES = {
     "en": "English",
@@ -182,25 +144,3 @@ def get_language_name(language_code: str) -> str:
     """
     return LANGUAGE_NAMES.get(language_code, language_code)
 
-
-if __name__ == "__main__":
-    # Test the language identification
-    test_texts = [
-        ("Hello, this is a test in English.", "English"),
-        ("Bonjour, ceci est un test en français.", "French"),
-        ("Hola, esto es una prueba en español.", "Spanish"),
-        ("欢迎来到我们的网站", "Chinese"),
-        ("これは日本語のテストです。", "Japanese"),
-        ("Привет, это тест на русском языке.", "Russian"),
-    ]
-    
-    print("Language Identification Test")
-    print("=" * 60)
-    
-    for text, expected in test_texts:
-        lang, score = identify_language(text)
-        lang_name = get_language_name(lang)
-        print(f"Text: {text[:50]}...")
-        print(f"  Expected: {expected}")
-        print(f"  Detected: {lang_name} ({lang}) with confidence {score:.4f}")
-        print()

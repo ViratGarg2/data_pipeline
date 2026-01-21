@@ -1,0 +1,129 @@
+(venv2) (base) mehulag022@gnode005:~/assignment4-data/cs336_data$ python process_html_pipeline.py --max-files 5
+============================================================
+HTML to Text Extraction Pipeline with Language ID & PII Masking
+============================================================
+Input pattern: /data3/dataset/the_pile_deduplicated/data/train-*-of-01650-*.parquet
+Output directory: /home2/mehulag022/processed_data_html_extracted_lang
+Total files available: 1650
+Start index: 0
+Max files to process: 5
+Files to process this run: 5
+File range: [0 - 4]
+Language identification: ENABLED
+PII masking: ENABLED
+============================================================
+Processing files:   0%|                                                                                                                                                                  | 0/5 [00:00<?, ?it/s]
+[1/5] Processing: train-00000-of-01650-f70471ee3deb09c0.parquet
+  Rows: 81,405
+  HTML detected: 2,788
+  Extracted: 2,788
+  Failed: 0
+  PII masked: 13806 (emails:5863, phones:5969, IPs:1974)
+  Top languages: English:79906, Chinese:287, Japanese:111
+Processing files:  20%|██████████████████████████████▌                                                                                                                          | 1/5 [02:16<09:06, 136.66s/it]
+[2/5] Processing: train-00001-of-01650-172fc1a0c346b36e.parquet
+  Rows: 81,405
+  HTML detected: 2,876
+  Extracted: 2,876
+  Failed: 0
+  PII masked: 15586 (emails:6643, phones:6572, IPs:2371)
+  Top languages: English:79870, Chinese:266, Japanese:110
+Processing files:  40%|█████████████████████████████████████████████████████████████▏                                                                                           | 2/5 [04:47<07:14, 144.93s/it]
+[3/5] Processing: train-00002-of-01650-54ace3f77b399471.parquet
+  Rows: 81,405
+  HTML detected: 2,680
+  Extracted: 2,680
+  Failed: 0
+  PII masked: 15437 (emails:6149, phones:7213, IPs:2075)
+  Top languages: English:79972, Chinese:246, Japanese:96
+Processing files:  60%|███████████████████████████████████████████████████████████████████████████████████████████▊                                                             | 3/5 [07:23<04:59, 149.97s/it]
+[4/5] Processing: train-00003-of-01650-8b668ee0e6c178f5.parquet
+  Rows: 81,405
+  HTML detected: 2,783
+  Extracted: 2,783
+  Failed: 0
+  PII masked: 17994 (emails:5523, phones:6882, IPs:5589)
+  Top languages: English:79961, Chinese:242, French:101
+Processing files:  80%|██████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████▍                              | 4/5 [10:01<02:33, 153.07s/it]
+[5/5] Processing: train-00004-of-01650-fc5086352c963b1a.parquet
+  Rows: 81,405
+  HTML detected: 2,758
+  Extracted: 2,758
+  Failed: 0
+  PII masked: 13142 (emails:5821, phones:5302, IPs:2019)
+  Top languages: English:79941, Chinese:265, Japanese:109
+Processing files: 100%|█████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 5/5 [12:30<00:00, 150.09s/it]
+
+
+============================================================
+PIPELINE COMPLETE - FINAL STATISTICS
+============================================================
+Total files processed:    5
+Total rows processed:     407,025
+Total HTML detected:      13,885
+Total text extracted:     13,885
+Total extraction failed:  0
+Total time:               750.47 seconds
+Processing rate:          542.36 rows/sec
+
+------------------------------------------------------------
+PII MASKING SUMMARY
+------------------------------------------------------------
+Email addresses masked:   29,999
+Phone numbers masked:     31,938
+IP addresses masked:      14,028
+Total PII masked:         75,965
+
+------------------------------------------------------------
+HTML TYPE BREAKDOWN
+------------------------------------------------------------
+Type                           Count      Percentage
+------------------------------------------------------------
+plain_text                   393,140          96.59%
+partial_html                   6,381           1.57%
+generic_tags                   3,376           0.83%
+xml                            2,201           0.54%
+full_html                      1,927           0.47%
+------------------------------------------------------------
+TOTAL                        407,025         100.00%
+
+------------------------------------------------------------
+LANGUAGE BREAKDOWN
+------------------------------------------------------------
+Language                  Code            Count   Percentage
+------------------------------------------------------------
+English                   en            399,650       98.61%
+Chinese                   zh              1,306        0.32%
+Japanese                  ja                521        0.13%
+French                    fr                472        0.12%
+Portuguese                pt                444        0.11%
+Spanish                   es                392        0.10%
+Russian                   ru                369        0.09%
+German                    de                353        0.09%
+Italian                   it                186        0.05%
+Ukrainian                 uk                166        0.04%
+Korean                    ko                134        0.03%
+Dutch                     nl                 96        0.02%
+Greek                     el                 86        0.02%
+Turkish                   tr                 84        0.02%
+Polish                    pl                 69        0.02%
+Persian                   fa                 61        0.02%
+Swedish                   sv                 60        0.01%
+Arabic                    ar                 55        0.01%
+Hungarian                 hu                 53        0.01%
+Finnish                   fi                 41        0.01%
+Romanian                  ro                 41        0.01%
+Vietnamese                vi                 41        0.01%
+hr                        hr                 37        0.01%
+ca                        ca                 36        0.01%
+la                        la                 35        0.01%
+Norwegian                 no                 34        0.01%
+sr                        sr                 30        0.01%
+Danish                    da                 29        0.01%
+Indonesian                id                 26        0.01%
+Czech                     cs                 24        0.01%
+... others                                  344        0.08%
+------------------------------------------------------------
+TOTAL                                   405,275      100.00%
+Unique languages detected: 101
+============================================================
