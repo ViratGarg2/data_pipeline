@@ -1,0 +1,12 @@
+Detailed explanation of assignment is provided in data_assign.pdf
+parts of pipeline completed till now -> html extraction,lang identification, info masking,toxic and nsfw models, grofers based text filters
+major parts left before training -> quality filteration using a classifier and deduplication
+Read warc files (.parquet files)-> python3 read_warc.py -i downloaded_urls.warc.gz -e -o negative.txt --label negative --english-only
+main data pipeline is in cs336_data/process_html_pipeline.py run it along with arguments for number of files and max lines to be processed from each file
+Adjust the input/output path to all documents in cs336_data/config.py (run on ada server using data3/dataset/the_pile_deduplicated)
+Tests directory contains information regarding unittests to be passed for individual components of pipeline and can be run using commands given in assignment document
+models.txt contains links to models for classification in nsfw,toxicity and language, download and put them in model directory of this repo
+urls folder contains some files with urls(got from commoncrawl->negative.txt and positive.txt from wiki) which can be scrapped and have to be used for training a quality classifier
+tried dolma model used in olmo, but was exceeding the available RAM on ADA,Nvidia DeBERTA was failing the pytest and not working well,My trained model using fasttext was also not working well
+commoncrawl website for data dump(if required) -> https://www.commoncrawl.org/blog/december-2025-crawl-archive-now-available
+paloma c4 validation dataset -> https://huggingface.co/datasets/allenai/paloma/viewer/c4_100_domains?row=9 (to be used for validation)

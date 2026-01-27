@@ -29,6 +29,8 @@ try:
     from cs336_data.langid import identify_language, get_language_name
     from cs336_data.pii_masking import mask_all_pii
     from cs336_data.toxicity import classify_nsfw, classify_toxic_speech, classify_content
+    from cs336_data.quality_filter import gopher_quality_filter
+    from cs336_data.quality_classifier import classify_quality, filter_by_quality
     from cs336_data import config
 except ModuleNotFoundError:
     # When running directly from the cs336_data directory
@@ -37,6 +39,8 @@ except ModuleNotFoundError:
     from langid import identify_language, get_language_name
     from pii_masking import mask_all_pii
     from toxicity import classify_nsfw, classify_toxic_speech, classify_content
+    from quality_filter import gopher_quality_filter
+    from quality_classifier import classify_quality, filter_by_quality
 
 
 # ---------------- CONFIG ----------------
@@ -97,10 +101,12 @@ def process_single_file(
     enable_langid: bool = True,
     enable_pii_masking: bool = True,
     enable_content_classification: bool = True,
+    enable_quality_filter: bool = True,
+    enable_quality_classifier: bool = True,
     max_rows: int | None = None,
 ) -> dict:
     """
-    Process a single parquet file: detect HTML, extract text, identify language, mask PII, and classify content.
+    Process a single parquet file: detect HTML, extract text, identify language, mask PII, classify content, and apply quality filter.
     
     Args:
         input_path: Path to input parquet file
@@ -111,6 +117,8 @@ def process_single_file(
         enable_langid: Whether to perform language identification
         enable_pii_masking: Whether to mask PII (emails, phones, IPs)
         enable_content_classification: Whether to classify NSFW and toxic content
+        enable_quality_filter: Whether to apply Gopher quality filtering
+        enable_quality_classifier: Whether to use NVIDIA DeBERTa quality classifier
         max_rows: Maximum number of rows to process per file (None for all)
         
     Returns:
@@ -136,6 +144,34 @@ def process_single_file(
             "toxic": 0,
             "non_toxic": 0,
         },
+        "filtered": {
+            "non_english": 0,
+            "nsfw": 0,
+            "toxic": 0,
+            "low_quality_deberta": 0,
+            "total_filtered": 0,
+            "kept": 0,
+        },
+        "quality_filter": {
+            "passed": 0,
+            "failed": 0,
+            "failed_reasons": {
+                "word_count": 0,
+                "mean_word_length": 0,
+                "hash_ratio": 0,
+                "ellipsis_ratio": 0,
+                "bullet_line_ratio": 0,
+                "ellipsis_line_ratio": 0,
+                "alphabetic_word_ratio": 0,
+                "stop_word_count": 0,
+                "empty_or_invalid": 0,
+            },
+        },
+        "quality_classifier": {
+            "High": 0,
+            "Medium": 0,
+            "Low": 0,
+        },
     }
     
     # Read the parquet file
@@ -160,29 +196,34 @@ def process_single_file(
     
     stats["total_rows"] = len(texts)
     
-    # Process each text entry
-    processed_texts = []
-    detected_languages = []
-    language_scores = []
-    nsfw_labels = []
-    nsfw_scores = []
-    toxic_labels = []
-    toxic_scores = []
+    # Process and filter each text entry sequentially
+    # Order: HTML extraction -> PII masking -> Language filter -> Quality filter -> Content classification
+    # Short-circuit: skip expensive checks if document already fails earlier filter
     
-    for text in tqdm(texts, desc="  Processing rows", unit="rows", leave=False):
+    filtered_results = []  # List of dicts with all info for kept documents
+    kept_indices = []  # Track original indices of kept documents
+    
+    for idx, text in enumerate(tqdm(texts, desc="  Processing rows", unit="rows", leave=False)):
+        # Track this document's data
+        doc_data = {
+            "text": None,
+            "detected_language": None,
+            "language_score": 0.0,
+            "nsfw_label": None,
+            "nsfw_score": 0.0,
+            "toxic_label": None,
+            "toxic_score": 0.0,
+            "quality_label": None,
+            "quality_score": 0.0,
+        }
+        
+        # Handle None texts
         if text is None:
-            processed_texts.append(text)
-            detected_languages.append(None)
-            language_scores.append(0.0)
-            nsfw_labels.append(None)
-            nsfw_scores.append(0.0)
-            toxic_labels.append(None)
-            toxic_scores.append(0.0)
             stats["html_types"]["none"] += 1
-            stats["languages"]["none"] += 1
+            stats["filtered"]["total_filtered"] += 1
             continue
         
-        # Detect HTML content
+        # Step 1: HTML extraction
         is_html, html_type = is_html_content(text)
         stats["html_types"][html_type] += 1
         
@@ -204,10 +245,9 @@ def process_single_file(
                 current_text = text  # Keep original on failure
                 stats["extraction_failed"] += 1
         else:
-            # Not HTML, keep original
             current_text = text
         
-        # PII masking (emails, phone numbers, IP addresses)
+        # Step 2: PII masking (always apply if enabled, before filtering)
         if enable_pii_masking and current_text:
             current_text, pii_stats = mask_all_pii(current_text)
             stats["pii_masked"]["emails"] += pii_stats["emails"]
@@ -215,27 +255,60 @@ def process_single_file(
             stats["pii_masked"]["ips"] += pii_stats["ips"]
             stats["pii_masked"]["total"] += pii_stats["total"]
         
-        processed_texts.append(current_text)
+        doc_data["text"] = current_text
         
-        # Language identification
+        # Step 3: Language filter (FIRST filter - cheapest)
         if enable_langid and current_text:
             lang_code, lang_score = identify_language(current_text)
-            detected_languages.append(lang_code)
-            language_scores.append(lang_score)
+            doc_data["detected_language"] = lang_code
+            doc_data["language_score"] = lang_score
             stats["languages"][lang_code] += 1
-            stats["language_scores"][lang_code].append(lang_score)
-        else:
-            detected_languages.append(None)
-            language_scores.append(0.0)
+            
+            # Short-circuit: if not English, skip remaining filters
+            if lang_code != "en":
+                stats["filtered"]["non_english"] += 1
+                stats["filtered"]["total_filtered"] += 1
+                continue  # Skip to next document
         
-        # Content classification (NSFW and toxic speech)
+        # Step 4: Quality filter (SECOND filter - moderate cost, no model)
+        if enable_quality_filter and current_text:
+            quality_passed, quality_details = gopher_quality_filter(current_text)
+            
+            if quality_passed:
+                stats["quality_filter"]["passed"] += 1
+            else:
+                stats["quality_filter"]["failed"] += 1
+                for check in quality_details.get("failed_checks", []):
+                    if check in stats["quality_filter"]["failed_reasons"]:
+                        stats["quality_filter"]["failed_reasons"][check] += 1
+                # Short-circuit: if quality fails, skip content classification
+                stats["filtered"]["total_filtered"] += 1
+                continue  # Skip to next document
+        
+        # Step 5: Quality classifier using DeBERTa (THIRD filter - model-based)
+        # Only keep Medium and High quality texts, discard Low quality
+        if enable_quality_classifier and current_text:
+            keep_text, quality_label, quality_score = filter_by_quality(current_text)
+            
+            doc_data["quality_label"] = quality_label
+            doc_data["quality_score"] = quality_score
+            stats["quality_classifier"][quality_label] += 1
+            
+            if not keep_text:  # Low quality
+                stats["filtered"]["low_quality_deberta"] += 1
+                stats["filtered"]["total_filtered"] += 1
+                continue  # Skip to next document
+        
+        # Step 6: Content classification (LAST filter - most expensive, uses models)
         if enable_content_classification and current_text:
             nsfw_label, nsfw_score = classify_nsfw(current_text)
             toxic_label, toxic_score = classify_toxic_speech(current_text)
-            nsfw_labels.append(nsfw_label)
-            nsfw_scores.append(nsfw_score)
-            toxic_labels.append(toxic_label)
-            toxic_scores.append(toxic_score)
+            
+            doc_data["nsfw_label"] = nsfw_label
+            doc_data["nsfw_score"] = nsfw_score
+            doc_data["toxic_label"] = toxic_label
+            doc_data["toxic_score"] = toxic_score
+            
             # Update stats
             if nsfw_label == "nsfw":
                 stats["content_classification"]["nsfw"] += 1
@@ -245,33 +318,80 @@ def process_single_file(
                 stats["content_classification"]["toxic"] += 1
             else:
                 stats["content_classification"]["non_toxic"] += 1
-        else:
-            nsfw_labels.append(None)
-            nsfw_scores.append(0.0)
-            toxic_labels.append(None)
-            toxic_scores.append(0.0)
+            
+            # Short-circuit: if NSFW or toxic, filter out
+            if nsfw_label == "nsfw":
+                stats["filtered"]["nsfw"] += 1
+                stats["filtered"]["total_filtered"] += 1
+                continue  # Skip to next document
+            
+            if toxic_label == "toxic":
+                stats["filtered"]["toxic"] += 1
+                stats["filtered"]["total_filtered"] += 1
+                continue  # Skip to next document
+        
+        # Document passed all filters - keep it!
+        stats["filtered"]["kept"] += 1
+        filtered_results.append(doc_data)
+        kept_indices.append(idx)
     
-    # Update the dictionary with processed texts and language info
-    df_dict[text_column] = processed_texts
-    if enable_langid:
-        df_dict["detected_language"] = detected_languages
-        df_dict["language_score"] = language_scores
-    if enable_content_classification:
-        df_dict["nsfw_label"] = nsfw_labels
-        df_dict["nsfw_score"] = nsfw_scores
-        df_dict["toxic_label"] = toxic_labels
-        df_dict["toxic_score"] = toxic_scores
+    # Build output dataframe from filtered results
+    if filtered_results:
+        filtered_df_dict = {}
+        
+        # Copy original columns for kept rows
+        for col in df_dict.keys():
+            if col == text_column:
+                # Use the processed text
+                filtered_df_dict[col] = [doc["text"] for doc in filtered_results]
+            else:
+                # Copy original values for kept indices
+                original_values = df_dict[col]
+                filtered_df_dict[col] = [original_values[i] for i in kept_indices]
+        
+        # Add new columns
+        if enable_langid:
+            filtered_df_dict["detected_language"] = [doc["detected_language"] for doc in filtered_results]
+            filtered_df_dict["language_score"] = [doc["language_score"] for doc in filtered_results]
+        if enable_quality_classifier:
+            filtered_df_dict["quality_label"] = [doc["quality_label"] for doc in filtered_results]
+            filtered_df_dict["quality_score"] = [doc["quality_score"] for doc in filtered_results]
+        if enable_content_classification:
+            filtered_df_dict["nsfw_label"] = [doc["nsfw_label"] for doc in filtered_results]
+            filtered_df_dict["nsfw_score"] = [doc["nsfw_score"] for doc in filtered_results]
+            filtered_df_dict["toxic_label"] = [doc["toxic_label"] for doc in filtered_results]
+            filtered_df_dict["toxic_score"] = [doc["toxic_score"] for doc in filtered_results]
+    else:
+        filtered_df_dict = {col: [] for col in df_dict.keys()}
+        if enable_langid:
+            filtered_df_dict["detected_language"] = []
+            filtered_df_dict["language_score"] = []
+        if enable_quality_classifier:
+            filtered_df_dict["quality_label"] = []
+            filtered_df_dict["quality_score"] = []
+        if enable_content_classification:
+            filtered_df_dict["nsfw_label"] = []
+            filtered_df_dict["nsfw_score"] = []
+            filtered_df_dict["toxic_label"] = []
+            filtered_df_dict["toxic_score"] = []
+    
+    print(f"  Filtered: {stats['filtered']['total_filtered']} rows removed, {stats['filtered']['kept']} rows kept")
+    print(f"    - Non-English: {stats['filtered']['non_english']}")
+    print(f"    - Gopher quality failed: {stats['quality_filter']['failed']}")
+    print(f"    - DeBERTa low quality: {stats['filtered']['low_quality_deberta']}")
+    print(f"    - NSFW: {stats['filtered']['nsfw']}")
+    print(f"    - Toxic: {stats['filtered']['toxic']}")
     
     # Write to output parquet - handle NumPy 2.0 compatibility
     # Convert to PyArrow arrays explicitly to avoid copy issues
     arrays = []
     names = []
-    for key, values in df_dict.items():
+    for key, values in filtered_df_dict.items():
         names.append(key)
-        if key in ("language_score", "nsfw_score", "toxic_score"):
+        if key in ("language_score", "nsfw_score", "toxic_score", "quality_score"):
             # Ensure float array
             arrays.append(pa.array(values, type=pa.float64()))
-        elif key in ("detected_language", "nsfw_label", "toxic_label"):
+        elif key in ("detected_language", "nsfw_label", "toxic_label", "quality_label"):
             # Ensure string array with nulls
             arrays.append(pa.array(values, type=pa.string()))
         else:
@@ -297,10 +417,12 @@ def run_pipeline(
     enable_langid: bool = True,
     enable_pii_masking: bool = True,
     enable_content_classification: bool = True,
+    enable_quality_filter: bool = True,
+    enable_quality_classifier: bool = True,
     max_rows: int | None = 1000,  # DEBUG: Limit rows per file (set to None for all rows)
 ):
     """
-    Run the full HTML extraction, language identification, PII masking, and content classification pipeline.
+    Run the full HTML extraction, language identification, PII masking, content classification, and quality filtering pipeline.
     
     Args:
         input_glob: Glob pattern for input parquet files
@@ -313,6 +435,7 @@ def run_pipeline(
         enable_langid: Whether to perform language identification
         enable_pii_masking: Whether to mask PII (emails, phones, IPs)
         enable_content_classification: Whether to classify NSFW and toxic content
+        enable_quality_filter: Whether to apply Gopher quality filtering
         max_rows: Maximum number of rows to process per file (None for all, default: 1000 for debugging)
     """
     # Create output directory
@@ -353,6 +476,8 @@ def run_pipeline(
     print(f"Language identification: {'ENABLED' if enable_langid else 'DISABLED'}")
     print(f"PII masking: {'ENABLED' if enable_pii_masking else 'DISABLED'}")
     print(f"Content classification: {'ENABLED' if enable_content_classification else 'DISABLED'}")
+    print(f"Quality filter (Gopher): {'ENABLED' if enable_quality_filter else 'DISABLED'}")
+    print(f"Quality classifier (DeBERTa): {'ENABLED' if enable_quality_classifier else 'DISABLED'}")
     print("=" * 60)
     
     # Aggregate statistics
@@ -376,6 +501,34 @@ def run_pipeline(
             "toxic": 0,
             "non_toxic": 0,
         },
+        "filtered": {
+            "non_english": 0,
+            "nsfw": 0,
+            "toxic": 0,
+            "low_quality_deberta": 0,
+            "total_filtered": 0,
+            "kept": 0,
+        },
+        "quality_filter": {
+            "passed": 0,
+            "failed": 0,
+            "failed_reasons": {
+                "word_count": 0,
+                "mean_word_length": 0,
+                "hash_ratio": 0,
+                "ellipsis_ratio": 0,
+                "bullet_line_ratio": 0,
+                "ellipsis_line_ratio": 0,
+                "alphabetic_word_ratio": 0,
+                "stop_word_count": 0,
+                "empty_or_invalid": 0,
+            },
+        },
+        "quality_classifier": {
+            "High": 0,
+            "Medium": 0,
+            "Low": 0,
+        },
     }
     
     start_time = time.time()
@@ -397,6 +550,8 @@ def run_pipeline(
                 enable_langid=enable_langid,
                 enable_pii_masking=enable_pii_masking,
                 enable_content_classification=enable_content_classification,
+                enable_quality_filter=enable_quality_filter,
+                enable_quality_classifier=enable_quality_classifier,
                 max_rows=max_rows,
             )
             
@@ -429,6 +584,26 @@ def run_pipeline(
                 total_stats["content_classification"]["toxic"] += file_stats["content_classification"]["toxic"]
                 total_stats["content_classification"]["non_toxic"] += file_stats["content_classification"]["non_toxic"]
             
+            # Aggregate filtering stats
+            total_stats["filtered"]["non_english"] += file_stats["filtered"]["non_english"]
+            total_stats["filtered"]["nsfw"] += file_stats["filtered"]["nsfw"]
+            total_stats["filtered"]["toxic"] += file_stats["filtered"]["toxic"]
+            total_stats["filtered"]["low_quality_deberta"] += file_stats["filtered"].get("low_quality_deberta", 0)
+            total_stats["filtered"]["total_filtered"] += file_stats["filtered"]["total_filtered"]
+            total_stats["filtered"]["kept"] += file_stats["filtered"]["kept"]
+            
+            # Aggregate quality filter stats
+            if enable_quality_filter:
+                total_stats["quality_filter"]["passed"] += file_stats["quality_filter"]["passed"]
+                total_stats["quality_filter"]["failed"] += file_stats["quality_filter"]["failed"]
+                for reason, count in file_stats["quality_filter"]["failed_reasons"].items():
+                    total_stats["quality_filter"]["failed_reasons"][reason] += count
+            
+            # Aggregate quality classifier stats
+            if enable_quality_classifier:
+                for quality_level in ("High", "Medium", "Low"):
+                    total_stats["quality_classifier"][quality_level] += file_stats["quality_classifier"].get(quality_level, 0)
+            
             # Print file-level stats
             print(f"  Rows: {file_stats['total_rows']:,}")
             print(f"  HTML detected: {file_stats['html_detected']:,}")
@@ -444,6 +619,11 @@ def run_pipeline(
             if enable_content_classification:
                 cc = file_stats["content_classification"]
                 print(f"  Content: NSFW:{cc['nsfw']}, Non-NSFW:{cc['non_nsfw']}, Toxic:{cc['toxic']}, Non-Toxic:{cc['non_toxic']}")
+            
+            # Print quality classifier stats for this file
+            if enable_quality_classifier:
+                qc = file_stats["quality_classifier"]
+                print(f"  Quality (DeBERTa): High:{qc['High']}, Medium:{qc['Medium']}, Low:{qc['Low']}")
             
             # Print top languages for this file
             if enable_langid and file_stats["languages"]:
@@ -548,6 +728,53 @@ def run_pipeline(
         print(f"Non-Toxic content:        {cc['non_toxic']:,} ({cc['non_toxic']/total_classified*100:.2f}%)" if total_classified > 0 else f"Non-Toxic content:        {cc['non_toxic']:,}")
         print()
     
+    # Print quality classifier summary (DeBERTa)
+    if enable_quality_classifier:
+        print("-" * 60)
+        print("QUALITY CLASSIFIER SUMMARY (NVIDIA DeBERTa)")
+        print("-" * 60)
+        qc = total_stats["quality_classifier"]
+        total_qc = qc["High"] + qc["Medium"] + qc["Low"]
+        print(f"High quality:             {qc['High']:,} ({qc['High']/total_qc*100:.2f}%)" if total_qc > 0 else f"High quality:             {qc['High']:,}")
+        print(f"Medium quality:           {qc['Medium']:,} ({qc['Medium']/total_qc*100:.2f}%)" if total_qc > 0 else f"Medium quality:           {qc['Medium']:,}")
+        print(f"Low quality (filtered):   {qc['Low']:,} ({qc['Low']/total_qc*100:.2f}%)" if total_qc > 0 else f"Low quality (filtered):   {qc['Low']:,}")
+        print(f"Kept (High+Medium):       {qc['High']+qc['Medium']:,}")
+        print()
+    
+    # Print filtering summary
+    print("-" * 60)
+    print("FILTERING SUMMARY (English only, Non-NSFW, Non-Toxic, Quality)")
+    print("-" * 60)
+    flt = total_stats["filtered"]
+    total_processed = flt["kept"] + flt["total_filtered"]
+    print(f"Total texts processed:    {total_processed:,}")
+    print(f"Texts KEPT:               {flt['kept']:,} ({flt['kept']/total_processed*100:.2f}%)" if total_processed > 0 else f"Texts KEPT:               {flt['kept']:,}")
+    print(f"Texts FILTERED OUT:       {flt['total_filtered']:,} ({flt['total_filtered']/total_processed*100:.2f}%)" if total_processed > 0 else f"Texts FILTERED OUT:       {flt['total_filtered']:,}")
+    print()
+    print("Filtered out due to:")
+    print(f"  - Non-English language: {flt['non_english']:,}")
+    print(f"  - Gopher quality:       {total_stats['quality_filter']['failed']:,}")
+    print(f"  - DeBERTa low quality:  {flt.get('low_quality_deberta', 0):,}")
+    print(f"  - NSFW content:         {flt['nsfw']:,}")
+    print(f"  - Toxic content:        {flt['toxic']:,}")
+    print()
+    
+    # Print quality filter summary
+    if enable_quality_filter:
+        print("-" * 60)
+        print("GOPHER QUALITY FILTER SUMMARY")
+        print("-" * 60)
+        qf = total_stats["quality_filter"]
+        total_qf = qf["passed"] + qf["failed"]
+        print(f"Texts passed quality:     {qf['passed']:,} ({qf['passed']/total_qf*100:.2f}%)" if total_qf > 0 else f"Texts passed quality:     {qf['passed']:,}")
+        print(f"Texts failed quality:     {qf['failed']:,} ({qf['failed']/total_qf*100:.2f}%)" if total_qf > 0 else f"Texts failed quality:     {qf['failed']:,}")
+        print()
+        print("Failed quality checks breakdown:")
+        for reason, count in sorted(qf["failed_reasons"].items(), key=lambda x: x[1], reverse=True):
+            if count > 0:
+                print(f"  - {reason}: {count:,}")
+        print()
+    
     print("=" * 60)
     
     return total_stats
@@ -617,9 +844,19 @@ if __name__ == "__main__":
         help="Disable NSFW and toxic content classification"
     )
     parser.add_argument(
+        "--no-quality-filter",
+        action="store_true",
+        help="Disable Gopher quality filtering"
+    )
+    parser.add_argument(
+        "--no-quality-classifier",
+        action="store_true",
+        help="Disable NVIDIA DeBERTa quality classifier"
+    )
+    parser.add_argument(
         "--max-rows", "-r",
         type=int,
-        default=1000,
+        default=-1,
         help="Maximum rows to process per file (default: 1000 for debugging, use -1 for all)"
     )
     
@@ -639,5 +876,7 @@ if __name__ == "__main__":
         enable_langid=not args.no_langid,
         enable_pii_masking=not args.no_pii,
         enable_content_classification=not args.no_content_classification,
+        enable_quality_filter=not args.no_quality_filter,
+        enable_quality_classifier=not args.no_quality_classifier,
         max_rows=max_rows,
     )
