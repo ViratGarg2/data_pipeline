@@ -1,9 +1,10 @@
 # CS336 Spring 2025 Assignment 4: Data
 
 For a full description of the assignment, see the assignment handout at
-[cs336_spring2025_assignment4_data.pdf](./assignment4_data.pdf)
+[cs336_spring2025_assignment4_data.pdf](./data_assign.pdf)
 
-Details of olmo paper for refrence -> 
+
+Details of olmo paper for refrence -> [olmo3_paper](./olmo3.pdf)
 
 For details on current status and how to run refer to commands.txt
 
