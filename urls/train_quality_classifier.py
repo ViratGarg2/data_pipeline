@@ -259,7 +259,7 @@ def main():
     parser.add_argument(
         "--positive-samples",
         type=int,
-        default=500,
+        default=None,
         help="Number of positive samples to use (default: 500)"
     )
     parser.add_argument(
@@ -283,8 +283,8 @@ def main():
     parser.add_argument(
         "--dim",
         type=int,
-        default=100,
-        help="Dimension of word vectors (default: 100)"
+        default=200,
+        help="Dimension of word vectors (default: 200)"
     )
     parser.add_argument(
         "--word-ngrams",

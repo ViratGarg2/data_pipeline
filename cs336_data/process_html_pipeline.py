@@ -12,13 +12,16 @@ Usage:
     python process_html_pipeline.py --max-files 10
 """
 
+import gc
 import glob
 import os
 import re
+import shutil
 import sys
 import time
 from collections import defaultdict
 
+import psutil
 import pyarrow as pa
 import pyarrow.parquet as pq
 from tqdm import tqdm
@@ -30,7 +33,17 @@ try:
     from cs336_data.pii_masking import mask_all_pii
     from cs336_data.toxicity import classify_nsfw, classify_toxic_speech, classify_content
     from cs336_data.quality_filter import gopher_quality_filter
-    from cs336_data.quality_classifier import classify_quality, filter_by_quality
+    from cs336_data.quality_classifier_fasttext import get_all_predictions
+    from cs336_data.minhash_lsh import (
+        normalize_text,
+        word_ngrams,
+        compute_minhash_signature,
+        lsh_buckets,
+        jaccard_similarity,
+        _generate_hash_params,
+        UnionFind,
+    )
+    from cs336_data.jsonl_io import read_jsonl_compressed, write_jsonl_compressed, get_output_path
     from cs336_data import config
 except ModuleNotFoundError:
     # When running directly from the cs336_data directory
@@ -40,11 +53,80 @@ except ModuleNotFoundError:
     from pii_masking import mask_all_pii
     from toxicity import classify_nsfw, classify_toxic_speech, classify_content
     from quality_filter import gopher_quality_filter
-    from quality_classifier import classify_quality, filter_by_quality
+    from quality_classifier_fasttext import get_all_predictions
+    from minhash_lsh import (
+        normalize_text,
+        word_ngrams,
+        compute_minhash_signature,
+        lsh_buckets,
+        jaccard_similarity,
+        _generate_hash_params,
+        UnionFind,
+    )
+    from jsonl_io import read_jsonl_compressed, write_jsonl_compressed, get_output_path
+
+
+# ---------------- MEMORY MONITORING UTILITIES ----------------
+def get_memory_usage() -> dict:
+    """Get current memory usage statistics.
+    
+    Returns:
+        Dictionary with memory stats in GB
+    """
+    process = psutil.Process(os.getpid())
+    mem_info = process.memory_info()
+    virtual_mem = psutil.virtual_memory()
+    
+    return {
+        "process_rss_gb": mem_info.rss / (1024 ** 3),
+        "process_vms_gb": mem_info.vms / (1024 ** 3),
+        "system_total_gb": virtual_mem.total / (1024 ** 3),
+        "system_available_gb": virtual_mem.available / (1024 ** 3),
+        "system_used_gb": virtual_mem.used / (1024 ** 3),
+        "system_percent": virtual_mem.percent,
+    }
+
+
+def get_disk_usage(path: str = "/") -> dict:
+    """Get disk usage statistics.
+    
+    Args:
+        path: Path to check disk usage for
+        
+    Returns:
+        Dictionary with disk stats in GB
+    """
+    disk = shutil.disk_usage(path)
+    return {
+        "total_gb": disk.total / (1024 ** 3),
+        "used_gb": disk.used / (1024 ** 3),
+        "free_gb": disk.free / (1024 ** 3),
+        "percent_used": (disk.used / disk.total) * 100,
+    }
+
+
+def print_memory_status(prefix: str = ""):
+    """Print current memory and disk status."""
+    mem = get_memory_usage()
+    print(f"{prefix}Memory: Process RSS={mem['process_rss_gb']:.2f}GB, "
+          f"System={mem['system_used_gb']:.2f}/{mem['system_total_gb']:.2f}GB ({mem['system_percent']:.1f}%)")
+
+
+def force_memory_cleanup():
+    """Force garbage collection and release memory."""
+    gc.collect()
+    # Force Python to release memory back to the OS (if possible)
+    try:
+        import ctypes
+        libc = ctypes.CDLL("libc.so.6")
+        libc.malloc_trim(0)
+    except Exception:
+        pass  # Not available on macOS or if libc not found
 
 
 # ---------------- CONFIG ----------------
 INPUT_GLOB = config.INPUT_GLOB
+INPUT_GLOB_JSON = getattr(config, "INPUT_GLOB_JSON", None)
 OUTPUT_DIR = config.OUTPUT_DIR
 TEXT_COLUMN = "text"
 BATCH_SIZE = 1000
@@ -104,6 +186,8 @@ def process_single_file(
     enable_quality_filter: bool = True,
     enable_quality_classifier: bool = True,
     max_rows: int | None = None,
+    input_format: str = "parquet",
+    output_format: str = "parquet",
 ) -> dict:
     """
     Process a single parquet file: detect HTML, extract text, identify language, mask PII, classify content, and apply quality filter.
@@ -118,7 +202,7 @@ def process_single_file(
         enable_pii_masking: Whether to mask PII (emails, phones, IPs)
         enable_content_classification: Whether to classify NSFW and toxic content
         enable_quality_filter: Whether to apply Gopher quality filtering
-        enable_quality_classifier: Whether to use NVIDIA DeBERTa quality classifier
+        enable_quality_classifier: Whether to use NVIDIA Fasttext quality classifier
         max_rows: Maximum number of rows to process per file (None for all)
         
     Returns:
@@ -148,7 +232,7 @@ def process_single_file(
             "non_english": 0,
             "nsfw": 0,
             "toxic": 0,
-            "low_quality_deberta": 0,
+            "low_quality_Fasttext": 0,
             "total_filtered": 0,
             "kept": 0,
         },
@@ -168,17 +252,27 @@ def process_single_file(
             },
         },
         "quality_classifier": {
-            "High": 0,
-            "Medium": 0,
-            "Low": 0,
+            "positive": 0,
+            "negative": 0,
         },
     }
     
-    # Read the parquet file
-    table = pq.read_table(input_path)
-    # Convert to Python dict - use to_pylist for better NumPy 2.0 compatibility
-    columns = table.column_names
-    df_dict = {col: table[col].to_pylist() for col in columns}
+    # Check memory before starting
+    print_memory_status("  [BEFORE] ")
+    
+    # Read input file based on format
+    if input_format == "parquet":
+        # Read the parquet file
+        table = pq.read_table(input_path)
+        # Convert to Python dict - use to_pylist for better NumPy 2.0 compatibility
+        columns = table.column_names
+        df_dict = {col: table[col].to_pylist() for col in columns}
+        # Release table immediately after extracting data
+        del table
+        gc.collect()
+    else:
+        # Read JSONL file (compressed or not)
+        df_dict = read_jsonl_compressed(input_path, text_column, max_rows=max_rows)
     
     if text_column not in df_dict:
         print(f"  Warning: Column '{text_column}' not found in {input_path}")
@@ -187,7 +281,8 @@ def process_single_file(
     texts = df_dict[text_column]
     
     # Limit rows if max_rows is specified (for debugging/testing)
-    if max_rows is not None and max_rows < len(texts):
+    # Note: For jsonl, limiting is done during read; for parquet, do it here
+    if input_format == "parquet" and max_rows is not None and max_rows < len(texts):
         print(f"  Limiting to {max_rows} rows (out of {len(texts)})")
         texts = texts[:max_rows]
         # Also limit other columns to match
@@ -265,7 +360,7 @@ def process_single_file(
             stats["languages"][lang_code] += 1
             
             # Short-circuit: if not English, skip remaining filters
-            if lang_code != "en":
+            if lang_code != "en" or lang_score < 0.5:
                 stats["filtered"]["non_english"] += 1
                 stats["filtered"]["total_filtered"] += 1
                 continue  # Skip to next document
@@ -285,17 +380,17 @@ def process_single_file(
                 stats["filtered"]["total_filtered"] += 1
                 continue  # Skip to next document
         
-        # Step 5: Quality classifier using DeBERTa (THIRD filter - model-based)
+        # Step 5: Quality classifier using Fasttext (THIRD filter - model-based)
         # Only keep Medium and High quality texts, discard Low quality
         if enable_quality_classifier and current_text:
-            keep_text, quality_label, quality_score = filter_by_quality(current_text)
+            predictions = get_all_predictions(current_text)
             
-            doc_data["quality_label"] = quality_label
-            doc_data["quality_score"] = quality_score
-            stats["quality_classifier"][quality_label] += 1
+            doc_data["quality_label"] = predictions["label"]
+            doc_data["quality_score"] = predictions["confidence"]
+            stats["quality_classifier"][predictions["label"]] += 1
             
-            if not keep_text:  # Low quality
-                stats["filtered"]["low_quality_deberta"] += 1
+            if doc_data["quality_label"] != "positive":  # Low quality
+                stats["filtered"]["low_quality_Fasttext"] += 1
                 stats["filtered"]["total_filtered"] += 1
                 continue  # Skip to next document
         
@@ -378,7 +473,7 @@ def process_single_file(
     print(f"  Filtered: {stats['filtered']['total_filtered']} rows removed, {stats['filtered']['kept']} rows kept")
     print(f"    - Non-English: {stats['filtered']['non_english']}")
     print(f"    - Gopher quality failed: {stats['quality_filter']['failed']}")
-    print(f"    - DeBERTa low quality: {stats['filtered']['low_quality_deberta']}")
+    print(f"    - Fasttext low quality: {stats['filtered']['low_quality_Fasttext']}")
     print(f"    - NSFW: {stats['filtered']['nsfw']}")
     print(f"    - Toxic: {stats['filtered']['toxic']}")
     
@@ -400,8 +495,21 @@ def process_single_file(
                 values = values.tolist()
             arrays.append(pa.array(values))
     
-    output_table = pa.table(dict(zip(names, arrays)))
-    pq.write_table(output_table, output_path, compression=compression)
+    # Write output based on format
+    if output_format == "parquet":
+        output_table = pa.table(dict(zip(names, arrays)))
+        pq.write_table(output_table, output_path, compression=compression)
+        del output_table
+    else:
+        # Write as compressed JSONL
+        actual_output_path = write_jsonl_compressed(output_path, filtered_df_dict, compression=compression)
+        if actual_output_path:
+            output_path = actual_output_path  # Update path if extension changed
+    
+    # Clean up large objects before returning
+    del arrays, names, filtered_df_dict, df_dict, texts, filtered_results, kept_indices
+    gc.collect()
+    print_memory_status("  [AFTER] ")
     
     return stats
 
@@ -419,13 +527,16 @@ def run_pipeline(
     enable_content_classification: bool = True,
     enable_quality_filter: bool = True,
     enable_quality_classifier: bool = True,
+    enable_deduplication: bool = True,
     max_rows: int | None = 1000,  # DEBUG: Limit rows per file (set to None for all rows)
+    input_format: str = "parquet",  # "parquet" or "jsonl"
+    output_format: str = "parquet",  # "parquet" or "jsonl"
 ):
     """
     Run the full HTML extraction, language identification, PII masking, content classification, and quality filtering pipeline.
     
     Args:
-        input_glob: Glob pattern for input parquet files
+        input_glob: Glob pattern for input files
         output_dir: Directory to write processed files
         text_column: Column name containing text/HTML content
         batch_size: Batch size for processing
@@ -437,6 +548,8 @@ def run_pipeline(
         enable_content_classification: Whether to classify NSFW and toxic content
         enable_quality_filter: Whether to apply Gopher quality filtering
         max_rows: Maximum number of rows to process per file (None for all, default: 1000 for debugging)
+        input_format: Input file format ("parquet" or "jsonl")
+        output_format: Output file format ("parquet" or "jsonl")
     """
     # Create output directory
     os.makedirs(output_dir, exist_ok=True)
@@ -461,12 +574,23 @@ def run_pipeline(
         input_files = all_input_files[start_index:end_index]
     else:
         input_files = all_input_files[start_index:]
+
+    # Read dedup parameters from central config (override CLI args)
+    dedup_num_hashes = getattr(config, "DEDUP_NUM_HASHES", 100)
+    dedup_num_bands = getattr(config, "DEDUP_NUM_BANDS", 10)
+    dedup_ngrams = getattr(config, "DEDUP_NGRAMS", 5)
+    dedup_jaccard_threshold = getattr(config, "DEDUP_JACCARD_THRESHOLD", 0.8)
+    # Allow global enable flag in config to disable dedup regardless of CLI
+    if not getattr(config, "DEDUPLICATION_ENABLED", True):
+        enable_deduplication = False
     
     print("=" * 60)
     print("HTML to Text Extraction Pipeline with Language ID & PII Masking")
     print("=" * 60)
     print(f"Input pattern: {input_glob}")
+    print(f"Input format: {input_format.upper()}")
     print(f"Output directory: {output_dir}")
+    print(f"Output format: {output_format.upper()}")
     print(f"Total files available: {total_available}")
     print(f"Start index: {start_index}")
     print(f"Max files to process: {max_files if max_files else 'ALL'}")
@@ -477,7 +601,11 @@ def run_pipeline(
     print(f"PII masking: {'ENABLED' if enable_pii_masking else 'DISABLED'}")
     print(f"Content classification: {'ENABLED' if enable_content_classification else 'DISABLED'}")
     print(f"Quality filter (Gopher): {'ENABLED' if enable_quality_filter else 'DISABLED'}")
-    print(f"Quality classifier (DeBERTa): {'ENABLED' if enable_quality_classifier else 'DISABLED'}")
+    print(f"Quality classifier (Fasttext): {'ENABLED' if enable_quality_classifier else 'DISABLED'}")
+    print(f"Deduplication (MinHash+LSH): {'ENABLED' if enable_deduplication else 'DISABLED'}")
+    if enable_deduplication:
+        print(f"  Hashes={dedup_num_hashes}, Bands={dedup_num_bands}, "
+              f"N-grams={dedup_ngrams}, Threshold={dedup_jaccard_threshold}")
     print("=" * 60)
     
     # Aggregate statistics
@@ -505,7 +633,7 @@ def run_pipeline(
             "non_english": 0,
             "nsfw": 0,
             "toxic": 0,
-            "low_quality_deberta": 0,
+            "low_quality_Fasttext": 0,
             "total_filtered": 0,
             "kept": 0,
         },
@@ -525,18 +653,29 @@ def run_pipeline(
             },
         },
         "quality_classifier": {
-            "High": 0,
-            "Medium": 0,
-            "Low": 0,
+            "positive": 0,
+            "negative": 0,
+        },
+        "deduplication": {
+            "total_docs_before": 0,
+            "total_docs_after": 0,
+            "duplicates_removed": 0,
+            "candidate_pairs": 0,
+            "verified_pairs": 0,
+            "files_rewritten": 0,
         },
     }
     
     start_time = time.time()
     
+    # Track which output files were actually written in THIS run
+    output_files_this_run: list[str] = []
+    
     # Process each file
     for i, input_path in enumerate(tqdm(input_files, desc="Processing files")):
         filename = os.path.basename(input_path)
-        output_path = os.path.join(output_dir, filename)
+        # Generate output path with correct extension based on output format
+        output_path = get_output_path(input_path, output_dir, input_format, output_format)
         
         print(f"\n[{i+1}/{len(input_files)}] Processing: {filename}")
         
@@ -553,6 +692,8 @@ def run_pipeline(
                 enable_quality_filter=enable_quality_filter,
                 enable_quality_classifier=enable_quality_classifier,
                 max_rows=max_rows,
+                input_format=input_format,
+                output_format=output_format,
             )
             
             # Update aggregate statistics
@@ -561,6 +702,9 @@ def run_pipeline(
             total_stats["html_detected"] += file_stats["html_detected"]
             total_stats["html_extracted"] += file_stats["html_extracted"]
             total_stats["extraction_failed"] += file_stats["extraction_failed"]
+            
+            # Track this output file for deduplication
+            output_files_this_run.append(output_path)
             
             for html_type, count in file_stats["html_types"].items():
                 total_stats["html_types"][html_type] += count
@@ -588,7 +732,7 @@ def run_pipeline(
             total_stats["filtered"]["non_english"] += file_stats["filtered"]["non_english"]
             total_stats["filtered"]["nsfw"] += file_stats["filtered"]["nsfw"]
             total_stats["filtered"]["toxic"] += file_stats["filtered"]["toxic"]
-            total_stats["filtered"]["low_quality_deberta"] += file_stats["filtered"].get("low_quality_deberta", 0)
+            total_stats["filtered"]["low_quality_Fasttext"] += file_stats["filtered"].get("low_quality_Fasttext", 0)
             total_stats["filtered"]["total_filtered"] += file_stats["filtered"]["total_filtered"]
             total_stats["filtered"]["kept"] += file_stats["filtered"]["kept"]
             
@@ -601,7 +745,7 @@ def run_pipeline(
             
             # Aggregate quality classifier stats
             if enable_quality_classifier:
-                for quality_level in ("High", "Medium", "Low"):
+                for quality_level in ("positive", "negative"):
                     total_stats["quality_classifier"][quality_level] += file_stats["quality_classifier"].get(quality_level, 0)
             
             # Print file-level stats
@@ -623,7 +767,7 @@ def run_pipeline(
             # Print quality classifier stats for this file
             if enable_quality_classifier:
                 qc = file_stats["quality_classifier"]
-                print(f"  Quality (DeBERTa): High:{qc['High']}, Medium:{qc['Medium']}, Low:{qc['Low']}")
+                print(f"  Quality (Fasttext): Positive:{qc['positive']}, Negative:{qc['negative']}")
             
             # Print top languages for this file
             if enable_langid and file_stats["languages"]:
@@ -631,9 +775,220 @@ def run_pipeline(
                 lang_str = ", ".join([f"{get_language_name(l)}:{c}" for l, c in top_langs])
                 print(f"  Top languages: {lang_str}")
             
+            # Memory cleanup after each file
+            del file_stats
+            force_memory_cleanup()
+            print_memory_status("  [MEMORY] ")
+            
         except Exception as e:
             print(f"  ERROR processing {filename}: {e}")
+            import traceback
+            traceback.print_exc()
+            # Still cleanup memory on error
+            force_memory_cleanup()
             continue
+    
+    # ==================================================================
+    # DEDUPLICATION STEP (runs only on files processed in THIS run)
+    # ==================================================================
+    if enable_deduplication:
+        print("\n")
+        print("=" * 60)
+        print("RUNNING DEDUPLICATION (MinHash + LSH)")
+        print("=" * 60)
+        print(f"  Hashes: {dedup_num_hashes}  |  Bands: {dedup_num_bands}  |  "
+              f"N-grams: {dedup_ngrams}  |  Threshold: {dedup_jaccard_threshold}")
+        print_memory_status("  [BEFORE DEDUP] ")
+        
+        dedup_start = time.time()
+        
+        # Use only files processed in THIS run (not all files in output_dir)
+        output_files = sorted(output_files_this_run)
+        
+        # Helper to read texts from output file (parquet or jsonl)
+        def read_output_file_texts(file_path: str) -> list:
+            """Read text column from output file, supporting both formats."""
+            if file_path.endswith('.parquet'):
+                tbl = pq.read_table(file_path, columns=[text_column])
+                texts = tbl[text_column].to_pylist()
+                num_rows = tbl.num_rows
+                del tbl
+                return texts, num_rows
+            else:
+                # JSONL format
+                data = read_jsonl_compressed(file_path, text_column)
+                texts = data.get(text_column, [])
+                return texts, len(texts)
+        
+        # --- DEBUG: Check actual row counts before deduplication -----------
+        print(f"\n🔍 DEBUG: Checking row counts in {len(output_files)} files from THIS run:")
+        total_debug_rows = 0
+        for i, file_path in enumerate(output_files):
+            _, num_rows = read_output_file_texts(file_path)
+            total_debug_rows += num_rows
+            print(f"  [{i+1}] {os.path.basename(file_path)}: {num_rows:,} rows")
+        print(f"  TOTAL DEBUG ROWS: {total_debug_rows:,}")
+        expected_files = len(output_files)
+        print(f"  Expected ({expected_files} files × up to {max_rows or 'ALL'} rows kept after filters)")
+        print()
+        
+        # --- 1. Collect all texts from the output files -----------
+        if not output_files:
+            print("  No output files from this run — skipping dedup.")
+        else:
+            # Build a flat list of (file_idx, row_idx, text) without keeping
+            # full parquet tables in memory.
+            doc_texts: list[str] = []        # normalised texts for MinHash
+            doc_raw: list[str] = []          # original texts for Jaccard
+            doc_locations: list[tuple[int, int]] = []  # (file_idx, row_idx)
+            
+            for file_idx, file_path in enumerate(output_files):
+                texts, _ = read_output_file_texts(file_path)
+                for row_idx, txt in enumerate(texts):
+                    if txt is not None:
+                        doc_texts.append(normalize_text(txt))
+                        doc_raw.append(txt)
+                        doc_locations.append((file_idx, row_idx))
+                del texts
+            
+            num_docs = len(doc_texts)
+            total_stats["deduplication"]["total_docs_before"] = num_docs
+            print(f"  Total documents across {len(output_files)} files: {num_docs:,}")
+            
+            if num_docs > 0:
+                # --- 2. Compute MinHash signatures -----------------------
+                hash_params = _generate_hash_params(dedup_num_hashes)
+                signatures: list[list[int]] = []
+                shingle_sets: list[set[str]] = []
+                
+                for i, norm_text in enumerate(tqdm(doc_texts, desc="  Computing MinHash", unit="docs", leave=False)):
+                    shingles = word_ngrams(norm_text, dedup_ngrams)
+                    shingle_sets.append(shingles)
+                    sig = compute_minhash_signature(shingles, hash_params)
+                    signatures.append(sig)
+                    # Periodic memory cleanup for large corpora
+                    if (i + 1) % 10000 == 0:
+                        gc.collect()
+                
+                # --- 3. LSH candidate detection --------------------------
+                candidate_pairs = lsh_buckets(signatures, dedup_num_bands)
+                total_stats["deduplication"]["candidate_pairs"] = len(candidate_pairs)
+                print(f"  Candidate duplicate pairs: {len(candidate_pairs):,}")
+                
+                # Free signatures now — only need shingle_sets for Jaccard
+                del signatures
+                gc.collect()
+                
+                # --- 4. Jaccard verification + Union-Find ----------------
+                uf = UnionFind(num_docs)
+                verified = 0
+                
+                for i, j in tqdm(candidate_pairs, desc="  Verifying Jaccard", unit="pairs", leave=False):
+                    sim = jaccard_similarity(shingle_sets[i], shingle_sets[j])
+                    if sim >= dedup_jaccard_threshold:
+                        uf.union(i, j)
+                        verified += 1
+                
+                total_stats["deduplication"]["verified_pairs"] = verified
+                print(f"  Verified duplicate pairs (Jaccard ≥ {dedup_jaccard_threshold}): {verified:,}")
+                
+                del candidate_pairs, shingle_sets
+                gc.collect()
+                
+                # --- 5. Decide which docs to keep (smallest idx wins) ----
+                components: dict[int, list[int]] = defaultdict(list)
+                for idx in range(num_docs):
+                    components[uf.find(idx)].append(idx)
+                
+                docs_to_keep: set[int] = set()
+                for members in components.values():
+                    docs_to_keep.add(min(members))
+                
+                duplicates_removed = num_docs - len(docs_to_keep)
+                total_stats["deduplication"]["total_docs_after"] = len(docs_to_keep)
+                total_stats["deduplication"]["duplicates_removed"] = duplicates_removed
+                print(f"  Documents kept: {len(docs_to_keep):,}  |  "
+                      f"Removed: {duplicates_removed:,}")
+                
+                del uf, components
+                gc.collect()
+                
+                # --- 6. Rewrite output files without duplicates -------
+                if duplicates_removed > 0:
+                    # Group kept doc indices by their source file
+                    keep_rows_per_file: dict[int, set[int]] = defaultdict(set)
+                    for doc_idx in docs_to_keep:
+                        file_idx, row_idx = doc_locations[doc_idx]
+                        keep_rows_per_file[file_idx].add(row_idx)
+                    
+                    files_rewritten = 0
+                    for file_idx, file_path in enumerate(output_files):
+                        keep_rows = keep_rows_per_file.get(file_idx)
+                        
+                        if file_path.endswith('.parquet'):
+                            # Read full table so we can filter rows
+                            tbl = pq.read_table(file_path)
+                            original_len = tbl.num_rows
+                            
+                            if keep_rows is None:
+                                # All rows from this file were duplicates — write empty
+                                keep_mask = [False] * original_len
+                            else:
+                                keep_mask = [r in keep_rows for r in range(original_len)]
+                            
+                            kept_count = sum(keep_mask)
+                            
+                            if kept_count < original_len:
+                                # Filter and rewrite
+                                mask_array = pa.array(keep_mask, type=pa.bool_())
+                                filtered_tbl = tbl.filter(mask_array)
+                                pq.write_table(filtered_tbl, file_path, compression=compression)
+                                files_rewritten += 1
+                                print(f"    Rewrote {os.path.basename(file_path)}: "
+                                      f"{original_len} → {kept_count} rows "
+                                      f"(-{original_len - kept_count})")
+                                del filtered_tbl, mask_array
+                            
+                            del tbl
+                        else:
+                            # JSONL format
+                            data = read_jsonl_compressed(file_path, text_column)
+                            original_len = len(data.get(text_column, []))
+                            
+                            if keep_rows is None:
+                                keep_indices = set()
+                            else:
+                                keep_indices = keep_rows
+                            
+                            # Filter each column
+                            filtered_data = {}
+                            for key, values in data.items():
+                                filtered_data[key] = [v for i, v in enumerate(values) if i in keep_indices]
+                            
+                            kept_count = len(filtered_data.get(text_column, []))
+                            
+                            if kept_count < original_len:
+                                write_jsonl_compressed(file_path, filtered_data, compression=compression)
+                                files_rewritten += 1
+                                print(f"    Rewrote {os.path.basename(file_path)}: "
+                                      f"{original_len} → {kept_count} rows "
+                                      f"(-{original_len - kept_count})")
+                            
+                            del data, filtered_data
+                        
+                        gc.collect()
+                    
+                    total_stats["deduplication"]["files_rewritten"] = files_rewritten
+                    print(f"  Files rewritten: {files_rewritten}")
+                else:
+                    print("  No duplicates found — output files unchanged.")
+                
+                del doc_texts, doc_raw, doc_locations, docs_to_keep
+                gc.collect()
+            
+            dedup_elapsed = time.time() - dedup_start
+            print(f"  Deduplication time: {dedup_elapsed:.2f}s")
+            print_memory_status("  [AFTER DEDUP] ")
     
     end_time = time.time()
     elapsed = end_time - start_time
@@ -728,17 +1083,16 @@ def run_pipeline(
         print(f"Non-Toxic content:        {cc['non_toxic']:,} ({cc['non_toxic']/total_classified*100:.2f}%)" if total_classified > 0 else f"Non-Toxic content:        {cc['non_toxic']:,}")
         print()
     
-    # Print quality classifier summary (DeBERTa)
+    # Print quality classifier summary (Fasttext)
     if enable_quality_classifier:
         print("-" * 60)
-        print("QUALITY CLASSIFIER SUMMARY (NVIDIA DeBERTa)")
+        print("QUALITY CLASSIFIER SUMMARY (Fasttext)")
         print("-" * 60)
         qc = total_stats["quality_classifier"]
-        total_qc = qc["High"] + qc["Medium"] + qc["Low"]
-        print(f"High quality:             {qc['High']:,} ({qc['High']/total_qc*100:.2f}%)" if total_qc > 0 else f"High quality:             {qc['High']:,}")
-        print(f"Medium quality:           {qc['Medium']:,} ({qc['Medium']/total_qc*100:.2f}%)" if total_qc > 0 else f"Medium quality:           {qc['Medium']:,}")
-        print(f"Low quality (filtered):   {qc['Low']:,} ({qc['Low']/total_qc*100:.2f}%)" if total_qc > 0 else f"Low quality (filtered):   {qc['Low']:,}")
-        print(f"Kept (High+Medium):       {qc['High']+qc['Medium']:,}")
+        total_qc = qc["positive"] + qc["negative"]
+        print(f"Positive (high) quality:  {qc['positive']:,} ({qc['positive']/total_qc*100:.2f}%)" if total_qc > 0 else f"Positive (high) quality:  {qc['positive']:,}")
+        print(f"Negative (low) quality:   {qc['negative']:,} ({qc['negative']/total_qc*100:.2f}%)" if total_qc > 0 else f"Negative (low) quality:   {qc['negative']:,}")
+        print(f"Kept (positive only):     {qc['positive']:,}")
         print()
     
     # Print filtering summary
@@ -754,7 +1108,7 @@ def run_pipeline(
     print("Filtered out due to:")
     print(f"  - Non-English language: {flt['non_english']:,}")
     print(f"  - Gopher quality:       {total_stats['quality_filter']['failed']:,}")
-    print(f"  - DeBERTa low quality:  {flt.get('low_quality_deberta', 0):,}")
+    print(f"  - Fasttext low quality:  {flt.get('low_quality_Fasttext', 0):,}")
     print(f"  - NSFW content:         {flt['nsfw']:,}")
     print(f"  - Toxic content:        {flt['toxic']:,}")
     print()
@@ -773,6 +1127,23 @@ def run_pipeline(
         for reason, count in sorted(qf["failed_reasons"].items(), key=lambda x: x[1], reverse=True):
             if count > 0:
                 print(f"  - {reason}: {count:,}")
+        print()
+    
+    # Print deduplication summary
+    if enable_deduplication:
+        print("-" * 60)
+        print("DEDUPLICATION SUMMARY (MinHash + LSH)")
+        print("-" * 60)
+        dd = total_stats["deduplication"]
+        print(f"Documents before dedup:   {dd['total_docs_before']:,}")
+        print(f"Documents after dedup:    {dd['total_docs_after']:,}")
+        print(f"Duplicates removed:       {dd['duplicates_removed']:,}")
+        if dd['total_docs_before'] > 0:
+            pct = dd['duplicates_removed'] / dd['total_docs_before'] * 100
+            print(f"Dedup removal rate:       {pct:.2f}%")
+        print(f"Candidate pairs found:    {dd['candidate_pairs']:,}")
+        print(f"Verified duplicate pairs: {dd['verified_pairs']:,}")
+        print(f"Output files rewritten:   {dd['files_rewritten']:,}")
         print()
     
     print("=" * 60)
@@ -851,13 +1222,33 @@ if __name__ == "__main__":
     parser.add_argument(
         "--no-quality-classifier",
         action="store_true",
-        help="Disable NVIDIA DeBERTa quality classifier"
+        help="Disable NVIDIA Fasttext quality classifier"
     )
+    parser.add_argument(
+        "--no-dedup",
+        action="store_true",
+        help="Disable MinHash+LSH fuzzy deduplication"
+    )
+    # Dedup parameters are read from cs336_data.config.py (DEDUP_*)
     parser.add_argument(
         "--max-rows", "-r",
         type=int,
         default=-1,
         help="Maximum rows to process per file (default: 1000 for debugging, use -1 for all)"
+    )
+    parser.add_argument(
+        "--input-format",
+        type=str,
+        choices=["parquet", "jsonl"],
+        default="parquet",
+        help="Input file format: 'parquet' or 'jsonl' (supports .jsonl, .jsonl.gz, .jsonl.zst)"
+    )
+    parser.add_argument(
+        "--output-format",
+        type=str,
+        choices=["parquet", "jsonl"],
+        default="parquet",
+        help="Output file format: 'parquet' or 'jsonl' (compressed with zstd)"
     )
     
     args = parser.parse_args()
@@ -865,8 +1256,14 @@ if __name__ == "__main__":
     # Handle max_rows: -1 means all rows
     max_rows = None if args.max_rows == -1 else args.max_rows
     
+    # If using jsonl input, switch to JSON glob if available and not explicitly set
+    input_glob = args.input_glob
+    if args.input_format == "jsonl" and args.input_glob == INPUT_GLOB and INPUT_GLOB_JSON:
+        input_glob = INPUT_GLOB_JSON
+        print(f"Using JSONL input glob from config: {input_glob}")
+    
     run_pipeline(
-        input_glob=args.input_glob,
+        input_glob=input_glob,
         output_dir=args.output_dir,
         text_column=args.text_column,
         batch_size=args.batch_size,
@@ -878,5 +1275,8 @@ if __name__ == "__main__":
         enable_content_classification=not args.no_content_classification,
         enable_quality_filter=not args.no_quality_filter,
         enable_quality_classifier=not args.no_quality_classifier,
+        enable_deduplication=not args.no_dedup,
         max_rows=max_rows,
+        input_format=args.input_format,
+        output_format=args.output_format,
     )

@@ -35,42 +35,55 @@ def test_gopher_valid_input():
         "This should definitely be a valid input text "
         "and of high quality according to Gopher rules. "
     ) * 100
-    assert run_gopher_quality_filter(text)
+    output = run_gopher_quality_filter(text)
+    print(f"Output for valid input: {output}")
+    assert output
 
 
 def test_gopher_less_than_50_non_symbol_words():
     text = "The string you are reading is a short snippet of text."
-    assert not run_gopher_quality_filter(text)
+    output = run_gopher_quality_filter(text)
+    assert not output
 
     text = "The string you are reading is a long snippet of text." * 100
-    assert run_gopher_quality_filter(text)
-
+    output = run_gopher_quality_filter(text)
+    print(f"Output for less than 50 non-symbol words: {output}")
+    assert output
 
 def test_gopher_more_than_100000_non_symbol_words():
     text = "The string you are reading is too long of a text. " * 50000
-    assert not run_gopher_quality_filter(text)
-
+    output = run_gopher_quality_filter(text)
+    print(f"Output for more than 100000 non-symbol words: {output}")
+    assert not output
     text = "The string you are reading is an okay example of text. " * 5000
-    assert run_gopher_quality_filter(text)
+    output = run_gopher_quality_filter(text)
+    print(f"Output for more than 100000 non-symbol words: {output}")
+    assert output
 
 
 def test_gopher_average_word_length_less_than_3():
     text = "the be " * 100
-    assert not run_gopher_quality_filter(text)
+    output = run_gopher_quality_filter(text)
+    print(f"Output for average word length less than 3: {output}")
+    assert not output
 
     text = "the with " * 100
-    assert run_gopher_quality_filter(text)
-
+    output = run_gopher_quality_filter(text)
+    print(f"Output for average word length less than 3: {output}")
+    assert output
 
 def test_gopher_average_word_length_greater_than_10():
     text = (
         "the and " + "extraordinarily extraordinarily extraordinarily longesest " * 100
     )
-    assert not run_gopher_quality_filter(text)
+    output = run_gopher_quality_filter(text)
+    print(f"Output for average word length greater than 10: {output}")
+    assert not output
 
     text = "the and this is fine " * 100
-    assert run_gopher_quality_filter(text)
-
+    output = run_gopher_quality_filter(text)
+    print(f"Output for average word length greater than 10: {output}")
+    assert output
 
 def test_gopher_more_than_30_percent_lines_ending_with_ellipsis():
     lines = [
@@ -86,11 +99,15 @@ def test_gopher_more_than_30_percent_lines_ending_with_ellipsis():
     ]
     lines += ["This is a normal line." for _ in range(230)]
     text = "\n".join(lines)
-    assert run_gopher_quality_filter(text)
+    output = run_gopher_quality_filter(text)
+    print(f"Output for less than 30% lines with ellipsis: {output}")
+    assert output
 
 
 def test_gopher_less_than_80_percent_words_with_alphabetic_character():
     words = ["123" for _ in range(8)]
     words += ["word" for _ in range(2)]
     text = "the and " + " ".join(words)
-    assert not run_gopher_quality_filter(text)
+    output = run_gopher_quality_filter(text)
+    print(f"Output for less than 80% alphabetic words: {output}")
+    assert not output

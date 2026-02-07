@@ -90,9 +90,6 @@ def identify_language(text: str, model_path: str | Path | None = None) -> tuple[
     # Get confidence score (probability)
     confidence = float(predictions[1][0])
     
-    # Ensure confidence is between 0 and 1
-    confidence = max(0.0, min(1.0, confidence))
-    
     return (language_code, confidence)
 
 

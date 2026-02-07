@@ -1,0 +1,127 @@
+PIPELINE COMPLETE - FINAL STATISTICS
+============================================================
+Total files processed:    3
+Total rows processed:     30,000
+Total HTML detected:      992
+Total text extracted:     992
+Total extraction failed:  0
+Total time:               1269.41 seconds
+Processing rate:          23.63 rows/sec
+
+------------------------------------------------------------
+PII MASKING SUMMARY
+------------------------------------------------------------
+Email addresses masked:   2,380
+Phone numbers masked:     2,642
+IP addresses masked:      633
+Total PII masked:         5,655
+
+------------------------------------------------------------
+HTML TYPE BREAKDOWN
+------------------------------------------------------------
+Type                           Count      Percentage
+------------------------------------------------------------
+plain_text                    29,008          96.69%
+partial_html                     463           1.54%
+generic_tags                     226           0.75%
+xml                              164           0.55%
+full_html                        139           0.46%
+------------------------------------------------------------
+TOTAL                         30,000         100.00%
+
+------------------------------------------------------------
+LANGUAGE BREAKDOWN
+------------------------------------------------------------
+Language                  Code            Count   Percentage
+------------------------------------------------------------
+English                   en             29,461       98.63%
+Chinese                   zh                100        0.33%
+Japanese                  ja                 42        0.14%
+French                    fr                 36        0.12%
+Spanish                   es                 34        0.11%
+German                    de                 30        0.10%
+Russian                   ru                 26        0.09%
+Portuguese                pt                 25        0.08%
+Italian                   it                 12        0.04%
+Korean                    ko                  9        0.03%
+Ukrainian                 uk                  9        0.03%
+Dutch                     nl                  8        0.03%
+Turkish                   tr                  8        0.03%
+Greek                     el                  6        0.02%
+Finnish                   fi                  6        0.02%
+Arabic                    ar                  5        0.02%
+ca                        ca                  5        0.02%
+Persian                   fa                  4        0.01%
+Hungarian                 hu                  4        0.01%
+hr                        hr                  4        0.01%
+Swedish                   sv                  4        0.01%
+Norwegian                 no                  3        0.01%
+sk                        sk                  3        0.01%
+gl                        gl                  2        0.01%
+sr                        sr                  2        0.01%
+Danish                    da                  2        0.01%
+Romanian                  ro                  2        0.01%
+kn                        kn                  2        0.01%
+Vietnamese                vi                  2        0.01%
+km                        km                  1        0.00%
+... others                                   14        0.05%
+------------------------------------------------------------
+TOTAL                                    29,871      100.00%
+Unique languages detected: 44
+------------------------------------------------------------
+CONTENT CLASSIFICATION SUMMARY
+------------------------------------------------------------
+NSFW content:             25 (0.15%)
+Non-NSFW content:         16,283 (99.85%)
+Toxic content:            60 (0.37%)
+Non-Toxic content:        16,248 (99.63%)
+
+------------------------------------------------------------
+QUALITY CLASSIFIER SUMMARY (Fasttext)
+------------------------------------------------------------
+Positive (high) quality:  16,308 (77.81%)
+Negative (low) quality:   4,652 (22.19%)
+Kept (positive only):     16,308
+
+------------------------------------------------------------
+FILTERING SUMMARY (English only, Non-NSFW, Non-Toxic, Quality)
+------------------------------------------------------------
+Total texts processed:    30,000
+Texts KEPT:               16,377 (54.59%)
+Texts FILTERED OUT:       13,623 (45.41%)
+
+Filtered out due to:
+  - Non-English language: 3,575
+  - Gopher quality:       5,336
+  - Fasttext low quality:  4,652
+  - NSFW content:         25
+  - Toxic content:        35
+
+------------------------------------------------------------
+GOPHER QUALITY FILTER SUMMARY
+------------------------------------------------------------
+Texts passed quality:     20,960 (79.71%)
+Texts failed quality:     5,336 (20.29%)
+
+Failed quality checks breakdown:
+  - alphabetic_word_ratio: 3,638
+  - word_count: 1,611
+  - ellipsis_line_ratio: 680
+  - stop_word_count: 386
+  - hash_ratio: 135
+  - mean_word_length: 115
+  - bullet_line_ratio: 26
+  - ellipsis_ratio: 14
+
+------------------------------------------------------------
+DEDUPLICATION SUMMARY (MinHash + LSH)
+------------------------------------------------------------
+Documents before dedup:   16,377
+Documents after dedup:    16,249
+Duplicates removed:       128
+Dedup removal rate:       0.78%
+Candidate pairs found:    8,256
+Verified duplicate pairs: 8,256
+Output files rewritten:   3
+
+============================================================

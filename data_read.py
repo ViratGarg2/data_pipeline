@@ -30,8 +30,9 @@ indx = 0
 start_time = time.time()
 
 for sample in tqdm(dataset):
-    if "text" in sample and isinstance(sample["text"], str) and indx<10000:
-        # print(sample["text"][:1000])  # Print first 100 characters of the text field
+    if "text" in sample and isinstance(sample["text"], str) and indx<4:
+
+        print(sample["nsfw_label"],sample["toxic_score"],sample["text"][:1000])  # Print first 100 characters of the text field
         # count = sample["text"].count("?")
         # total_replacements += count
         indx += 1

@@ -10,3 +10,6 @@ urls folder contains some files with urls(got from commoncrawl->negative.txt and
 tried dolma model used in olmo, but was exceeding the available RAM on ADA,Nvidia DeBERTA was failing the pytest and not working well,My trained model using fasttext was also not working well
 commoncrawl website for data dump(if required) -> https://www.commoncrawl.org/blog/december-2025-crawl-archive-now-available
 paloma c4 validation dataset -> https://huggingface.co/datasets/allenai/paloma/viewer/c4_100_domains?row=9 (to be used for validation)
+refrence github repo -> https://github.com/radi-cho/cs336-a4/blob/main/cs336_data/classifier/subsampled_positive_urls.txt
+the dataset is taken from -> https://pile.eleuther.ai and deduplciated after it
+command to read .zstd files -> zstdcat file.zst | less

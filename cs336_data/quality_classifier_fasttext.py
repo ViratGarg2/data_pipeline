@@ -30,7 +30,7 @@ _model = None
 # Default model path - can be overridden
 DEFAULT_MODEL_PATH = os.environ.get(
     "FASTTEXT_QUALITY_MODEL",
-    str(Path(__file__).parent.parent / "urls" / "quality_classifier.bin")
+    str(Path(__file__).parent.parent / "urls" / "quality_model.bin")
 )
 
 
@@ -50,9 +50,9 @@ def _load_model(model_path: str | None = None):
                 f"Or set FASTTEXT_QUALITY_MODEL environment variable to the model path."
             )
         
-        print(f"Loading FastText quality classifier: {path}")
+        # print(f"Loading FastText quality classifier: {path}")
         _model = fasttext.load_model(path)
-        print("FastText quality classifier loaded successfully")
+        # print("FastText quality classifier loaded successfully")
     
     return _model
 
@@ -97,48 +97,8 @@ def classify_quality(text: str, model_path: str | None = None) -> Tuple[str, flo
     # Extract label and probability
     label = labels[0].replace("__label__", "")
     prob = probs[0]
-    print(f"Classified text as '{label}' with confidence {prob:.4f}")
     
     return label, float(prob)
-
-
-def classify_quality_batch(
-    texts: list[str], 
-    model_path: str | None = None
-) -> list[Tuple[str, float]]:
-    """
-    Classify quality for a batch of texts.
-    
-    Args:
-        texts: List of input texts
-        model_path: Optional path to FastText model
-        
-    Returns:
-        List of (quality_label, confidence_score) tuples
-    """
-    if not texts:
-        return []
-    
-    model = _load_model(model_path)
-    results = []
-    
-    for text in texts:
-        if not text or not isinstance(text, str) or not text.strip():
-            results.append(("negative", 0.0))
-            continue
-        
-        # Clean text
-        text_clean = text.replace("\n", " ").replace("\r", " ")
-        text_clean = " ".join(text_clean.split())
-        
-        labels, probs = model.predict(text_clean, k=1)
-        label = labels[0].replace("__label__", "")
-        prob = probs[0]
-        
-        results.append((label, float(prob)))
-    
-    return results
-
 
 def is_quality_acceptable(text: str, model_path: str | None = None) -> bool:
     """
@@ -153,27 +113,6 @@ def is_quality_acceptable(text: str, model_path: str | None = None) -> bool:
     """
     label, _ = classify_quality(text, model_path)
     return label == "positive"
-
-
-def map_quality_to_category(label: str) -> str:
-    """
-    Map quality labels to broader categories for filtering.
-    
-    Maps:
-    - "positive" -> "wiki" (high quality, similar to Wikipedia)
-    - "negative" -> "cc" (low quality Common Crawl)
-    
-    Args:
-        label: Quality label ("positive" or "negative")
-        
-    Returns:
-        Category string ("wiki" or "cc")
-    """
-    if label == "positive":
-        return "wiki"
-    else:
-        return "cc"
-
 
 def classify_quality_with_category(text: str, model_path: str | None = None) -> Tuple[str, float]:
     """
@@ -191,7 +130,11 @@ def classify_quality_with_category(text: str, model_path: str | None = None) -> 
         - confidence_score: Probability score (0-1)
     """
     label, score = classify_quality(text, model_path)
-    category = map_quality_to_category(label)
+    if label == "positive":
+        category = "wiki"
+    else:
+        category = "cc"
+    # category = map_quality_to_category(label)
     return category, score
 
 
@@ -252,62 +195,62 @@ def get_all_predictions(text: str, model_path: str | None = None) -> dict:
     
     return {
         "label": top_label,
-        "category": map_quality_to_category(top_label),
+        # "category": map_quality_to_category(top_label),
         "confidence": top_prob,
         "all_labels": all_labels,
         "all_probs": all_probs,
     }
 
 
-# CLI for testing
-if __name__ == "__main__":
-    import argparse
+# # CLI for testing
+# if __name__ == "__main__":
+#     import argparse
     
-    parser = argparse.ArgumentParser(description="Test FastText quality classifier")
-    parser.add_argument("--model", "-m", type=str, default=None, help="Path to model file")
-    parser.add_argument("--text", "-t", type=str, help="Text to classify")
-    parser.add_argument("--file", "-f", type=str, help="File with texts to classify (one per line)")
+#     parser = argparse.ArgumentParser(description="Test FastText quality classifier")
+#     parser.add_argument("--model", "-m", type=str, default=None, help="Path to model file")
+#     parser.add_argument("--text", "-t", type=str, help="Text to classify")
+#     parser.add_argument("--file", "-f", type=str, help="File with texts to classify (one per line)")
     
-    args = parser.parse_args()
+#     args = parser.parse_args()
     
-    if args.model:
-        set_model_path(args.model)
+#     if args.model:
+#         set_model_path(args.model)
     
-    if args.text:
-        label, score = classify_quality(args.text)
-        category = map_quality_to_category(label)
-        print(f"Label: {label}")
-        print(f"Category: {category}")
-        print(f"Confidence: {score:.4f}")
-        print(f"Keep: {label == 'positive'}")
+#     if args.text:
+#         label, score = classify_quality(args.text)
+#         category = map_quality_to_category(label)
+#         print(f"Label: {label}")
+#         print(f"Category: {category}")
+#         print(f"Confidence: {score:.4f}")
+#         print(f"Keep: {label == 'positive'}")
     
-    elif args.file:
-        with open(args.file, "r", encoding="utf-8") as f:
-            for i, line in enumerate(f, 1):
-                line = line.strip()
-                if not line:
-                    continue
-                label, score = classify_quality(line)
-                category = map_quality_to_category(label)
-                preview = line[:60] + "..." if len(line) > 60 else line
-                print(f"[{i}] [{category}] ({score:.3f}): {preview}")
+#     elif args.file:
+#         with open(args.file, "r", encoding="utf-8") as f:
+#             for i, line in enumerate(f, 1):
+#                 line = line.strip()
+#                 if not line:
+#                     continue
+#                 label, score = classify_quality(line)
+#                 category = map_quality_to_category(label)
+#                 preview = line[:60] + "..." if len(line) > 60 else line
+#                 print(f"[{i}] [{category}] ({score:.3f}): {preview}")
     
-    else:
-        # Interactive mode
-        print("FastText Quality Classifier - Interactive Mode")
-        print("Enter text to classify (Ctrl+D to exit):")
-        print("-" * 50)
+#     else:
+#         # Interactive mode
+#         print("FastText Quality Classifier - Interactive Mode")
+#         print("Enter text to classify (Ctrl+D to exit):")
+#         print("-" * 50)
         
-        try:
-            while True:
-                text = input("\n> ")
-                if not text.strip():
-                    continue
+#         try:
+#             while True:
+#                 text = input("\n> ")
+#                 if not text.strip():
+#                     continue
                 
-                result = get_all_predictions(text)
-                print(f"  Label: {result['label']}")
-                print(f"  Category: {result['category']}")
-                print(f"  Confidence: {result['confidence']:.4f}")
-                print(f"  Keep: {result['label'] == 'positive'}")
-        except EOFError:
-            print("\nGoodbye!")
+#                 result = get_all_predictions(text)
+#                 print(f"  Label: {result['label']}")
+#                 print(f"  Category: {result['category']}")
+#                 print(f"  Confidence: {result['confidence']:.4f}")
+#                 print(f"  Keep: {result['label'] == 'positive'}")
+#         except EOFError:
+#             print("\nGoodbye!")

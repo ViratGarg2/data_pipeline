@@ -1,0 +1,47 @@
+(venv2) (base) mehulag022@gnode050:~/assignment4-data$ pytest
+================================================= test session starts ==================================================
+platform linux -- Python 3.13.2, pytest-9.0.2, pluggy-1.6.0
+rootdir: /home2/mehulag022/assignment4-data
+configfile: pyproject.toml
+plugins: anyio-4.12.1
+collected 21 items                                                                                                     
+
+tests/test_deduplication.py::test_exact_line_deduplication PASSED
+tests/test_deduplication.py::test_minhash_deduplication_exact_duplicates PASSED
+tests/test_deduplication.py::test_minhash_deduplication_fuzzy_duplicates PASSED
+tests/test_extract.py::test_extract_text_from_html_bytes Extracted text matches expected output for "Herman Melville - Moby-Dick\n\nAvailing himself of the mild, summer-cool weather that now reigned in these latitudes, and in preparation for the peculiarly active pursuits shortly to be anticipated, Perth, the begrimed, blistered old blacksmith, had not removed his portable forge to the hold again, after concluding his contributory work for Ahab's leg, but still retained it on deck, fast lashed to ringbolts by the foremast; being now almost incessantly invoked by the headsmen, and harpooneers, and bowsmen to do some little job for them; altering, or repairing, or new shaping their various weapons and boat furniture.\n\nThis is a test paragraph with a link.\n\n  • Novel"
+PASSED
+tests/test_langid.py::test_identify_language_english PASSED
+tests/test_langid.py::test_identify_language_chinese_simplified PASSED
+tests/test_pii.py::test_mask_emails_single PASSED
+tests/test_pii.py::test_mask_emails_multiple PASSED
+tests/test_pii.py::test_mask_emails_existing_string PASSED
+tests/test_pii.py::test_mask_phones_single PASSED
+tests/test_pii.py::test_mask_ips PASSED
+tests/test_quality.py::test_classify_quality Loading FastText quality classifier: /home2/mehulag022/assignment4-data/urls/quality_model.bin
+FastText quality classifier loaded successfully
+Prediction: cc, Score: 0.9546266794204712
+Prediction: wiki, Score: 0.8306313753128052
+PASSED
+tests/test_quality.py::test_gopher_valid_input Output for valid input: True
+PASSED
+tests/test_quality.py::test_gopher_less_than_50_non_symbol_words Output for less than 50 non-symbol words: True
+PASSED
+tests/test_quality.py::test_gopher_more_than_100000_non_symbol_words Output for more than 100000 non-symbol words: False
+Output for more than 100000 non-symbol words: True
+PASSED
+tests/test_quality.py::test_gopher_average_word_length_less_than_3 Output for average word length less than 3: False
+Output for average word length less than 3: True
+PASSED
+tests/test_quality.py::test_gopher_average_word_length_greater_than_10 Output for average word length greater than 10: False
+Output for average word length greater than 10: True
+PASSED
+tests/test_quality.py::test_gopher_more_than_30_percent_lines_ending_with_ellipsis Output for less than 30% lines with ellipsis: True
+PASSED
+tests/test_quality.py::test_gopher_less_than_80_percent_words_with_alphabetic_character Output for less than 80% alphabetic words: False
+PASSED
+tests/test_toxicity.py::test_classify_nsfw PASSED
+tests/test_toxicity.py::test_classify_toxic_speech PASSED
+
+================================================= 21 passed in 22.94s ==================================================
+(venv2) (base) mehulag022@gnode050:~/assignment4-data$ 

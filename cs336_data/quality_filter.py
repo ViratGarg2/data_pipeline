@@ -17,6 +17,19 @@ Rules:
 import re
 from typing import Tuple
 
+# NLTK imports for better tokenization
+import nltk
+try:
+    nltk.data.find('tokenizers/punkt')
+except LookupError:
+    nltk.download('punkt', quiet=True)
+try:
+    nltk.data.find('tokenizers/punkt_tab')
+except LookupError:
+    nltk.download('punkt_tab', quiet=True)
+
+from nltk.tokenize import word_tokenize
+
 
 # Stop words required for English text detection
 STOP_WORDS = {"the", "be", "to", "of", "and", "that", "have", "with"}
@@ -28,9 +41,46 @@ BULLET_PATTERNS = re.compile(r"^[\s]*[-•●○▪▸►◦*→⁃‣⦿⦾]\s*
 ELLIPSIS_END_PATTERN = re.compile(r"\.{3}\s*$|…\s*$", re.MULTILINE)
 
 
+def tokenize_text(text: str) -> list[str]:
+    """
+    Tokenize text using NLTK's word_tokenize for better handling of
+    punctuation, contractions, and special characters.
+    
+    Args:
+        text: Input text to tokenize
+        
+    Returns:
+        List of tokens/words
+    """
+    try:
+        tokens = word_tokenize(text)
+        return tokens
+    except Exception:
+        # Fallback to simple split if NLTK fails
+        return text.split()
+
+
+def get_words_only(tokens: list[str]) -> list[str]:
+    """
+    Filter tokens to get only actual words (containing at least one letter).
+    Excludes pure punctuation tokens.
+    
+    Args:
+        tokens: List of tokens from tokenize_text
+        
+    Returns:
+        List of word tokens only
+    """
+    return [t for t in tokens if any(c.isalpha() for c in t)]
+
+
 def count_words(text: str) -> list[str]:
-    """Split text into words."""
-    return text.split()
+    """
+    Split text into words using NLTK tokenizer.
+    Returns only actual words (not pure punctuation).
+    """
+    tokens = tokenize_text(text)
+    return get_words_only(tokens)
 
 
 def get_word_count(text: str) -> int:
@@ -121,27 +171,31 @@ def get_ellipsis_line_ratio(text: str) -> float:
 def get_alphabetic_word_ratio(text: str) -> float:
     """
     Calculate the ratio of words containing at least one alphabetic character.
+    Uses all tokens (including punctuation) for this calculation.
     
     Returns:
-        Ratio of alphabetic words to total words
+        Ratio of alphabetic words to total tokens
     """
-    words = count_words(text)
-    if not words:
+    # Get all tokens (including punctuation) for this ratio
+    tokens = tokenize_text(text)
+    if not tokens:
         return 0.0
     
-    alpha_count = sum(1 for word in words if any(c.isalpha() for c in word))
-    return alpha_count / len(words)
+    alpha_count = sum(1 for token in tokens if any(c.isalpha() for c in token))
+    return alpha_count / len(tokens)
 
 
 def count_stop_words(text: str) -> int:
     """
     Count how many of the required stop words appear in the text.
+    Uses NLTK tokenization for better word boundary detection.
     
     Returns:
         Number of unique stop words found (0-8)
     """
-    text_lower = text.lower()
-    words_set = set(text_lower.split())
+    # Use NLTK tokenizer and convert to lowercase
+    tokens = tokenize_text(text.lower())
+    words_set = set(tokens)
     
     # Count unique stop words present
     return len(STOP_WORDS.intersection(words_set))
@@ -189,6 +243,7 @@ def gopher_quality_filter(text: str) -> Tuple[bool, dict]:
     
     # Rule 1: Word count between 50 and 100,000
     if word_count < 50 or word_count > 100000:
+        # print("Word count check failed:", word_count,text[:20])
         failed_checks.append("word_count")
     
     # Rule 2: Mean word length between 3 and 10
@@ -235,7 +290,7 @@ def gopher_quality_filter(text: str) -> Tuple[bool, dict]:
         "failed_checks": failed_checks,
     }
     
-    return passes_filter, details
+    return passes_filter,details
 
 
 def gopher_quality_filter_batch(texts: list[str]) -> list[Tuple[bool, dict]]:

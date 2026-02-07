@@ -77,6 +77,9 @@ def test_minhash_deduplication_exact_duplicates(tmp_path):
                     f"Failed to find output file {filepath} contents {output_file_contents.__repr__()} in "
                     f"expected deduplicated documents {deduplicated_documents}."
                 )
+    import time
+    print("⏰ Sleeping 60s so you can inspect files...")
+    time.sleep(60)
     assert len(deduplicated_documents) == 0
 
 
@@ -127,6 +130,9 @@ def test_minhash_deduplication_fuzzy_duplicates(tmp_path):
                     f"expected deduplicated documents {deduplicated_documents} or "
                     f"kept duplicated documents {kept_duplicated_documents}."
                 )
+    import time
+    print("⏰ Sleeping 60s so you can inspect files...")
+    time.sleep(60)
     assert len(deduplicated_documents) == 0
     # One of the kept deduplicated documents should be kept, and the other should be removed.
     assert len(kept_duplicated_documents) == 1
