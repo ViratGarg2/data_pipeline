@@ -13,3 +13,11 @@ paloma c4 validation dataset -> https://huggingface.co/datasets/allenai/paloma/v
 refrence github repo -> https://github.com/radi-cho/cs336-a4/blob/main/cs336_data/classifier/subsampled_positive_urls.txt
 the dataset is taken from -> https://pile.eleuther.ai and deduplciated after it
 command to read .zstd files -> zstdcat file.zst | less
+
+command to run as a batch job using script -> JOBID=$(sbatch --parsable \
+  --partition=u22 \
+  --ntasks=1 \
+  --cpus-per-task=4 \
+  --mem-per-cpu=4G \
+  --time=10:00:00 \
+ /home2/mehulag022/assignment4-data/cs336_data/run_pipeline.sh)

@@ -1,0 +1,4 @@
+ngrams = 5
+nhashes = 256
+nbands = 32
+

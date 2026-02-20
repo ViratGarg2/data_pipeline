@@ -1,0 +1,1 @@
+Take a document -> preprocess it to remove extra spaces,punctuations -> convert that text to shingles -> change each shingle to a hash -> take 100 hash functions and compute the hash function value for each shingle and keep only the minimum value for a given hash function,finally resulting in a signature of size n_hash for a given text document.
