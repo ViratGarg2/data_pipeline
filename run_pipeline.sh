@@ -33,5 +33,7 @@ python -u process_html_pipeline.py \
   --no-dedup \
   --batch-size 64 \
   --push-to-hf \
+  --start-index 39 \
   --hf-repo-id ViratGarg/pile_data \
-  --hf-path-prefix processed
+  --hf-path-prefix processed \
+  --no-content-classification \

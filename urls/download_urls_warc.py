@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """
-Download URLs from positive_repo.txt file and store output in WARC format.
+Download URLs from CDX file and store output in WARC format.
 
 Usage:
-    python download_urls_warc.py --input urls/positive_repo.txt --output output.warc --num-urls 100
-    python download_urls_warc.py --input urls/positive_repo.txt --output output.warc  # Up to 1000 URLs
+    python download_urls_warc.py --input urls/cdx-00000 --output output.warc --num-urls 100
+    python download_urls_warc.py --input urls/cdx-00000 --output output.warc  # All URLs
 """
 
 import argparse
+import json
 import subprocess
 import tempfile
 from pathlib import Path
@@ -15,38 +16,45 @@ from pathlib import Path
 from tqdm import tqdm
 
 
-MAX_LINES_PER_FILE = 1000  # Maximum number of lines to read from each file
-
-
-def extract_urls_from_file(file_path: str, num_urls: int | None = None) -> list[str]:
+def extract_urls_from_cdx(cdx_path: str, num_urls: int | None = None) -> list[str]:
     """
-    Extract URLs from a text file (one URL per line).
+    Extract URLs from a CDX file.
     
     Args:
-        file_path: Path to the input file
-        num_urls: Maximum number of URLs to extract (None for all, but capped at MAX_LINES_PER_FILE)
+        cdx_path: Path to the CDX file
+        num_urls: Maximum number of URLs to extract (None for all)
         
     Returns:
         List of URLs
     """
     urls = []
     
-    # Cap the number of URLs to MAX_LINES_PER_FILE
+    # Count total lines for progress bar if processing all
     if num_urls is None:
-        num_urls = MAX_LINES_PER_FILE
+        with open(cdx_path, "r", encoding="utf-8") as f:
+            total_lines = sum(1 for _ in f)
     else:
-        num_urls = min(num_urls, MAX_LINES_PER_FILE)
+        total_lines = num_urls
     
-    total_lines = num_urls
-    
-    with open(file_path, "r", encoding="utf-8") as f:
+    with open(cdx_path, "r", encoding="utf-8") as f:
         for i, line in enumerate(tqdm(f, total=total_lines, desc="Extracting URLs", unit="urls")):
-            if i >= num_urls:
+            if num_urls is not None and i >= num_urls:
                 break
             
-            url = line.strip()
-            if url:  # Skip empty lines
-                urls.append(url)
+            try:
+                # CDX format: key timestamp {json}
+                # Find the JSON part (starts with {)
+                json_start = line.find("{")
+                if json_start == -1:
+                    continue
+                    
+                json_str = line[json_start:].strip()
+                data = json.loads(json_str)
+                
+                if "url" in data:
+                    urls.append(data["url"])
+            except json.JSONDecodeError:
+                continue
     
     return urls
 
@@ -56,6 +64,7 @@ def download_urls_to_warc(
     output_warc: str,
     timeout: int = 5,
     verbose: bool = False,
+    batch_size: int = 100,
 ) -> None:
     """
     Download URLs using wget and save to WARC format.
@@ -65,6 +74,7 @@ def download_urls_to_warc(
         output_warc: Output WARC file path (without .warc.gz extension)
         timeout: Timeout in seconds for each request
         verbose: Print verbose output
+        batch_size: Number of URLs to download per batch (for progress tracking)
     """
     if not urls:
         print("No URLs to download")
@@ -139,13 +149,13 @@ def download_urls_to_warc(
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Download URLs from a text file and store in WARC format"
+        description="Download URLs from CDX file and store in WARC format"
     )
     parser.add_argument(
         "--input", "-i",
         type=str,
         required=True,
-        help="Path to input text file containing URLs (one per line)"
+        help="Path to input CDX file containing URLs"
     )
     parser.add_argument(
         "--output", "-o",
@@ -157,7 +167,7 @@ def main():
         "--num-urls", "-n",
         type=int,
         default=None,
-        help="Number of URLs to download (default: up to 1000)"
+        help="Number of URLs to download (default: all)"
     )
     parser.add_argument(
         "--timeout", "-t",
@@ -175,6 +185,12 @@ def main():
         action="store_true",
         help="Filter out robots.txt URLs"
     )
+    parser.add_argument(
+        "--filter-status",
+        type=str,
+        default=None,
+        help="Only include URLs with this HTTP status (e.g., '200')"
+    )
     
     args = parser.parse_args()
     
@@ -186,7 +202,7 @@ def main():
     print(f"Reading URLs from: {args.input}")
     
     # Extract URLs
-    urls = extract_urls_from_file(args.input, args.num_urls)
+    urls = extract_urls_from_cdx(args.input, args.num_urls)
     print(f"Found {len(urls)} URLs")
     
     # Apply filters
@@ -204,10 +220,6 @@ def main():
     )
     
     return 0
-
-
-if __name__ == "__main__":
-    exit(main())
 
 
 if __name__ == "__main__":

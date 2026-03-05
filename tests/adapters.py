@@ -4,18 +4,14 @@ from cs336_data.langid import identify_language
 from cs336_data.pii_masking import mask_emails, mask_phone_numbers, mask_ip_addresses
 from cs336_data.quality_filter import gopher_quality_filter
 from cs336_data.toxicity import classify_nsfw, classify_toxic_speech
-from cs336_data.quality_classifier_fasttext import get_all_predictions
-from cs336_data.exact_line_dedup import exact_line_deduplication
-from cs336_data.minhash_lsh import minhash_lsh_deduplication
-
 
 # Try to import quality classifier (using Dolma3 FastText model)
-# try:
-#     # from cs336_data.quality_classifier_dolma import classify_quality_with_category
-#     _quality_classifier_available = True
-# except (ImportError, FileNotFoundError, OSError):
-#     _quality_classifier_available = False
-#     classify_quality_with_category = None
+try:
+    from cs336_data.quality_classifier_dolma import classify_quality_with_category
+    _quality_classifier_available = True
+except (ImportError, FileNotFoundError, OSError):
+    _quality_classifier_available = False
+    classify_quality_with_category = None
 
 
 def run_extract_text_from_html_bytes(html_bytes: bytes) -> str | None:
@@ -93,8 +89,7 @@ def run_gopher_quality_filter(text: str) -> bool:
     Returns:
         True if text passes all quality checks, False otherwise
     """
-    label,details = gopher_quality_filter(text)
-    return label
+    return gopher_quality_filter(text)
 
 
 def run_classify_nsfw(text: str) -> tuple[str, float]:
@@ -136,37 +131,20 @@ def run_classify_quality(text: str) -> tuple[str, float]:
         Tuple of (category, confidence_score)
         - category: "wiki" (high quality) or "cc" (low quality)
     """
-    # if not _quality_classifier_available:
-    #     raise NotImplementedError(
-    #         "FastText quality classifier not available. "
-    #         "Please train a model first using train_quality_classifier.py"
-    #     )
-    output = get_all_predictions(text)
-    if output["label"] == "positive":
-        category = "wiki"
-    else:
-        category = "cc"
-    return category, output["confidence"]
-
-# Deduplication adapters
-def run_exact_line_deduplication(input_files: list, output_directory) -> dict:
-    return exact_line_deduplication(input_files=input_files, output_directory=output_directory)
+    if not _quality_classifier_available:
+        raise NotImplementedError(
+            "FastText quality classifier not available. "
+            "Please train a model first using train_quality_classifier.py"
+        )
+    return classify_quality_with_category(text)
 
 
-def run_minhash_deduplication(
-    input_files: list,
-    output_directory,
-    num_hashes: int = 100,
-    num_bands: int = 10,
-    ngrams: int = 5,
-    jaccard_threshold: float = 0.8,
-) -> dict:
-    """Remove near-duplicate documents using MinHash + LSH."""
-    return minhash_lsh_deduplication(
-        input_files=input_files,
-        num_hashes=num_hashes,
-        num_bands=num_bands,
-        ngrams=ngrams,
-        jaccard_threshold=jaccard_threshold,
-        output_directory=output_directory,
-    )
+# Deduplication adapters (stubs - implement when needed)
+def run_exact_line_deduplication(text: str) -> str:
+    """Remove exact duplicate lines from text."""
+    raise NotImplementedError("Exact line deduplication not implemented yet")
+
+
+def run_minhash_deduplication(texts: list[str]) -> list[str]:
+    """Remove near-duplicate texts using MinHash."""
+    raise NotImplementedError("MinHash deduplication not implemented yet")

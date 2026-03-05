@@ -1,12 +1,15 @@
 """Union-Find (disjoint set union) implementation."""
 
+from array import array
+
 
 class UnionFind:
     """Weighted quick-union with path compression."""
 
     def __init__(self, n: int):
-        self.parent = list(range(n))
-        self.rank = [0] * n
+        # Compact arrays drastically reduce memory for large n.
+        self.parent = array("I", range(n))
+        self.rank = array("B", [0]) * n
 
     def find(self, x: int) -> int:
         while self.parent[x] != x:

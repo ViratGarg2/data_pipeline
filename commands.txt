@@ -20,4 +20,6 @@ command to run as a batch job using script -> JOBID=$(sbatch --parsable \
   --cpus-per-task=4 \
   --mem-per-cpu=4G \
   --time=10:00:00 \
- /home2/mehulag022/assignment4-data/cs336_data/run_pipeline.sh)
+  "/home2/mehulag022/assignment4-data/cs336_data/run_pipeline.sh")
+
+echo "Submitted job $JOBID"

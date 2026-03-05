@@ -15,6 +15,7 @@ import os
 import posixpath
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 from tqdm import tqdm
@@ -223,6 +224,86 @@ def _upload_file_with_progress_http(api, local_path, repo_id, path_in_repo, comm
     raise RuntimeError("No compatible upload_file signature worked: {}".format(last_err))
 
 
+def _print_timing_table(timing, rewrite_upload_seconds=None):
+    """Print a compact timing table."""
+    rows = [
+        ("Step 1 - Scan + Signature", timing.get("step1_scan_and_signature_seconds", 0.0)),
+        ("Step 2 - LSH Bucketing", timing.get("step2_lsh_bucketing_seconds", 0.0)),
+        ("Step 3 - Jaccard Verify", timing.get("step3_jaccard_verification_seconds", 0.0)),
+        ("Step 4 - Component Reduce", timing.get("step4_component_reduce_seconds", 0.0)),
+    ]
+    if rewrite_upload_seconds is not None:
+        rows.append(("Step 5 - Rewrite + Upload", rewrite_upload_seconds))
+    total = sum(sec for _, sec in rows)
+
+    print("\n" + "-" * 72)
+    print("TIME PROFILE")
+    print("-" * 72)
+    print("{:<34} {:>10} {:>10}".format("Step", "Seconds", "Share"))
+    for name, sec in rows:
+        share = 0.0 if total == 0 else (100.0 * sec / total)
+        print("{:<34} {:>10.2f} {:>9.2f}%".format(name, sec, share))
+    print("-" * 72)
+    print("{:<34} {:>10.2f}".format("Total Profiled", total))
+
+    # Granular step-1 breakdown (scan + signature internals).
+    norm_s = timing.get("step1_normalization_seconds")
+    shingle_s = timing.get("step1_shingling_seconds")
+    shingle_to_int_s = timing.get("step1_shingle_to_int_seconds")
+    sig_core_s = timing.get("step1_signature_core_seconds")
+    sig_s = timing.get("step1_signature_seconds")
+    cache_s = timing.get("step1_cache_write_seconds")
+    other_s = timing.get("step1_other_overhead_seconds")
+    docs_processed = timing.get("step1_docs_processed", 0)
+    total_shingles = timing.get("step1_total_shingles")
+    band_partitions = timing.get("step2_band_partitions")
+    skipped_large_buckets = timing.get("step2_skipped_large_buckets", 0)
+    skipped_large_bucket_docs = timing.get("step2_skipped_large_bucket_docs", 0)
+
+    if norm_s is not None and shingle_s is not None and sig_s is not None:
+        print("\n" + "-" * 72)
+        print("STEP 1 BREAKDOWN (SCAN + SIGNATURE)")
+        print("-" * 72)
+        print("{:<34} {:>10}".format("Sub-step", "Seconds"))
+        print("{:<34} {:>10.2f}".format("Normalization", float(norm_s)))
+        print("{:<34} {:>10.2f}".format("Shingling", float(shingle_s)))
+        if shingle_to_int_s is not None and sig_core_s is not None:
+            print("{:<34} {:>10.2f}".format("Shingle -> int conversion", float(shingle_to_int_s)))
+            print("{:<34} {:>10.2f}".format("Signature compute (core)", float(sig_core_s)))
+            print("{:<34} {:>10.2f}".format("Signature compute (total)", float(sig_s)))
+        else:
+            print("{:<34} {:>10.2f}".format("Signature compute", float(sig_s)))
+        if cache_s is not None:
+            print("{:<34} {:>10.2f}".format("Cache write", float(cache_s)))
+        if other_s is not None:
+            print("{:<34} {:>10.2f}".format("Other overhead", float(other_s)))
+        print("-" * 72)
+        if docs_processed and docs_processed > 0:
+            print("{:<34} {:>10}".format("Docs processed", "{:,}".format(docs_processed)))
+            print(
+                "{:<34} {:>10.4f}".format(
+                    "Avg ms/doc (step1)",
+                    1000.0 * float(timing.get("step1_scan_and_signature_seconds", 0.0)) / float(docs_processed),
+                )
+            )
+            if total_shingles is not None:
+                print("{:<34} {:>10}".format("Total shingles", "{:,}".format(int(total_shingles))))
+                print(
+                    "{:<34} {:>10.2f}".format(
+                        "Avg shingles/doc",
+                        float(total_shingles) / float(docs_processed),
+                    )
+                )
+    if skipped_large_buckets:
+        print("\n" + "-" * 72)
+        print("LSH GUARDRAIL STATS")
+        print("-" * 72)
+        if band_partitions is not None:
+            print("{:<34} {:>10}".format("Band partitions used", "{:,}".format(int(band_partitions))))
+        print("{:<34} {:>10}".format("Skipped large buckets", "{:,}".format(int(skipped_large_buckets))))
+        print("{:<34} {:>10}".format("Docs in skipped buckets", "{:,}".format(int(skipped_large_bucket_docs))))
+
+
 def _rewrite_deduplicated_file(
     input_path,
     output_path,
@@ -297,9 +378,13 @@ def dedup_and_upload(
     jaccard_threshold,
     batch_size,
     cache_dir,
+    workers=1,
+    max_bucket_size=5000,
+    band_partitions=128,
     max_files=None,
     max_rows=None,
     max_words=10000,
+    count_only=False,
 ):
     """Run folder-level dedup and upload deduplicated files to HF one by one."""
     try:
@@ -314,6 +399,8 @@ def dedup_and_upload(
         input_files = input_files[:max_files]
     if not input_files:
         raise FileNotFoundError("No .jsonl.zst files found in: {}".format(input_folder))
+    if not count_only and (not hf_repo_id or not hf_token):
+        raise ValueError("hf_repo_id and hf_token are required unless --count-only is enabled")
 
     print("=" * 72)
     print("JSONL.ZST FOLDER DEDUP + HF UPLOAD")
@@ -321,11 +408,17 @@ def dedup_and_upload(
     print("Input folder: {}".format(input_folder))
     print("Files found: {:,}".format(len(input_files)))
     print("Text column: {}".format(text_column))
-    print("HF repo: {}".format(hf_repo_id))
-    print("HF path prefix: {}".format(hf_path_prefix or "(root)"))
+    if count_only:
+        print("Mode: count-only (no rewrite, no upload)")
+    else:
+        print("HF repo: {}".format(hf_repo_id))
+        print("HF path prefix: {}".format(hf_path_prefix or "(root)"))
     print("Max files: {}".format(max_files if max_files is not None else "ALL"))
     print("Max rows per file: {}".format(max_rows if max_rows is not None else "ALL"))
     print("Max words per row for dedup: {}".format(max_words if max_words is not None else "ALL"))
+    print("Workers (scan+signature): {}".format(workers))
+    print("Max bucket size (LSH): {}".format(max_bucket_size if max_bucket_size is not None else "UNLIMITED"))
+    print("Band partitions (LSH): {}".format(band_partitions))
     print("Dedup params:")
     print(
         "  num_hashes={}, num_bands={}, ngrams={}, threshold={}".format(
@@ -335,6 +428,7 @@ def dedup_and_upload(
     print("=" * 72)
 
     print("Running deduplication engine...")
+    overall_start = time.time()
     dedup_result = minhash_lsh_deduplication_tabular_files(
         input_files=[str(p) for p in input_files],
         text_column=text_column,
@@ -346,6 +440,9 @@ def dedup_and_upload(
         cache_dir=cache_dir,
         max_rows_per_file=max_rows,
         max_words_per_row=max_words,
+        workers=workers,
+        max_bucket_size=max_bucket_size,
+        band_partitions=band_partitions,
         verbose=True,
     )
 
@@ -355,6 +452,7 @@ def dedup_and_upload(
     candidate_pairs = dedup_result["candidate_pairs_checked"]
     verified_pairs = dedup_result["verified_pairs"]
     keep_rows_per_file = dedup_result["keep_rows_per_file"]
+    total_shingles = dedup_result.get("total_shingles", 0)
 
     print("\n" + "-" * 72)
     print("DEDUPLICATION STATISTICS")
@@ -362,8 +460,16 @@ def dedup_and_upload(
     print("Total valid docs scanned: {:,}".format(total_docs))
     print("Docs kept after dedup:   {:,}".format(kept_docs))
     print("Docs removed:            {:,}".format(removed_docs))
-    print("Estimated candidates:    {:,}".format(candidate_pairs))
+    print("Total shingles generated: {:,}".format(total_shingles))
+    print("Candidate pair checks:   {:,}".format(candidate_pairs))
     print("Verified dup pairs:      {:,}".format(verified_pairs))
+    dedup_timing = dedup_result.get("timing", {})
+
+    if count_only:
+        _print_timing_table(dedup_timing, rewrite_upload_seconds=0.0)
+        print("Count-only completed. Duplicate docs: {:,}".format(removed_docs))
+        print("Wall time: {:.2f} seconds".format(time.time() - overall_start))
+        return
 
     try:
         from huggingface_hub import HfApi
@@ -386,6 +492,7 @@ def dedup_and_upload(
     total_valid_rows_seen = 0
     total_rows_written = 0
     total_invalid_rows = 0
+    rewrite_upload_start = time.time()
 
     print("Step 4/4: Rewriting deduplicated files and uploading...")
     file_iter = tqdm(
@@ -463,6 +570,8 @@ def dedup_and_upload(
     print("Rows written/uploaded:    {:,}".format(total_rows_written))
     print("Invalid JSONL rows:       {:,}".format(total_invalid_rows))
     print("=" * 72)
+    _print_timing_table(dedup_timing, rewrite_upload_seconds=time.time() - rewrite_upload_start)
+    print("Wall time: {:.2f} seconds".format(time.time() - overall_start))
 
 
 def parse_args():
@@ -507,6 +616,24 @@ def parse_args():
     parser.add_argument("--jaccard-threshold", type=float, default=0.5)
     parser.add_argument("--batch-size", type=int, default=1000)
     parser.add_argument(
+        "--workers",
+        type=int,
+        default=1,
+        help="Number of processes for Step 1 (scan+signature). Use >1 to parallelize CPU-heavy signature compute.",
+    )
+    parser.add_argument(
+        "--max-bucket-size",
+        type=int,
+        default=5000,
+        help="Skip LSH buckets larger than this size during candidate generation (memory/speed guard).",
+    )
+    parser.add_argument(
+        "--band-partitions",
+        type=int,
+        default=128,
+        help="Number of on-disk partitions per LSH band for low-memory bucketing on large runs.",
+    )
+    parser.add_argument(
         "--max-files",
         type=int,
         default=None,
@@ -530,6 +657,11 @@ def parse_args():
         default=None,
         help="Optional cache dir for dedup internals (default: temporary directory)",
     )
+    parser.add_argument(
+        "--count-only",
+        action="store_true",
+        help="Only run dedup and print duplicate counts + timing profile. Skip rewrite and HF upload.",
+    )
     return parser.parse_args()
 
 
@@ -551,8 +683,11 @@ def main():
     env_values = {}
     env_values.update(_load_env_file(env_path))
 
-    hf_token = _resolve_hf_token(env_values)
-    hf_repo_id = _resolve_repo_id(args.hf_repo_id, env_values)
+    hf_token = None
+    hf_repo_id = None
+    if not args.count_only:
+        hf_token = _resolve_hf_token(env_values)
+        hf_repo_id = _resolve_repo_id(args.hf_repo_id, env_values)
 
     if args.max_files is not None and args.max_files <= 0:
         raise ValueError("--max-files must be a positive integer")
@@ -560,6 +695,12 @@ def main():
         raise ValueError("--max-rows must be a positive integer")
     if args.max_words is not None and args.max_words <= 0:
         raise ValueError("--max-words must be a positive integer")
+    if args.workers <= 0:
+        raise ValueError("--workers must be a positive integer")
+    if args.max_bucket_size is not None and args.max_bucket_size <= 1:
+        raise ValueError("--max-bucket-size must be > 1 or omitted")
+    if args.band_partitions <= 0:
+        raise ValueError("--band-partitions must be a positive integer")
 
     dedup_and_upload(
         input_folder=input_folder,
@@ -573,9 +714,13 @@ def main():
         jaccard_threshold=args.jaccard_threshold,
         batch_size=args.batch_size,
         cache_dir=args.cache_dir,
+        workers=args.workers,
+        max_bucket_size=args.max_bucket_size,
+        band_partitions=args.band_partitions,
         max_files=args.max_files,
         max_rows=args.max_rows,
         max_words=args.max_words,
+        count_only=args.count_only,
     )
 
 

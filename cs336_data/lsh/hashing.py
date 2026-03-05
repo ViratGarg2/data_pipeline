@@ -13,6 +13,13 @@ def shingle_to_int(shingle: str) -> int:
     return struct.unpack("<Q", h)[0]
 
 
+def shingles_to_ints(shingle_set: Set[str]) -> List[int]:
+    """Convert shingles to deterministic integer ids."""
+    if not shingle_set:
+        return []
+    return [shingle_to_int(s) for s in shingle_set]
+
+
 def _generate_hash_params(num_hashes: int, seed: int = 42) -> List[Tuple[int, int]]:
     """Generate deterministic (a, b) parameters for linear hash family."""
     import random
@@ -31,13 +38,20 @@ def compute_minhash_signature(
     hash_params: List[Tuple[int, int]],
 ) -> List[int]:
     """Compute MinHash signature for a shingle set."""
+    shingle_ints = shingles_to_ints(shingle_set)
+    return compute_minhash_signature_from_ints(shingle_ints, hash_params)
+
+
+def compute_minhash_signature_from_ints(
+    shingle_ints: List[int],
+    hash_params: List[Tuple[int, int]],
+) -> List[int]:
+    """Compute MinHash signature from integer shingles."""
     num_hashes = len(hash_params)
-
-    if not shingle_set:
-        return [MERSENNE_PRIME] * num_hashes
-
-    shingle_ints = [shingle_to_int(s) for s in shingle_set]
     signature = [MERSENNE_PRIME] * num_hashes
+
+    if not shingle_ints:
+        return signature
 
     for s_int in shingle_ints:
         for i, (a, b) in enumerate(hash_params):
