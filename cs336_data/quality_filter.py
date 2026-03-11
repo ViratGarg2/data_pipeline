@@ -17,189 +17,100 @@ Rules:
 import re
 from typing import Tuple
 
-# NLTK imports for better tokenization
-import nltk
-try:
-    nltk.data.find('tokenizers/punkt')
-except LookupError:
-    nltk.download('punkt', quiet=True)
-try:
-    nltk.data.find('tokenizers/punkt_tab')
-except LookupError:
-    nltk.download('punkt_tab', quiet=True)
-
-from nltk.tokenize import word_tokenize
-
+# ── Fast regex-based tokenizer ──────────────────────────────
+# Matches sequences of alphanumerics/underscores OR single non-whitespace chars.
+# This is ~20-50× faster than nltk.word_tokenize while giving comparable
+# word-level tokens for the metrics we compute.
+_WORD_RE = re.compile(r"[A-Za-z]+(?:'[A-Za-z]+)*|[0-9]+(?:\.[0-9]+)*|\S")
+_ALPHA_RE = re.compile(r"[A-Za-z]")
 
 # Stop words required for English text detection
-STOP_WORDS = {"the", "be", "to", "of", "and", "that", "have", "with"}
+STOP_WORDS = frozenset({"the", "be", "to", "of", "and", "that", "have", "with"})
 
-# Bullet point patterns
-BULLET_PATTERNS = re.compile(r"^[\s]*[-•●○▪▸►◦*→⁃‣⦿⦾]\s*", re.MULTILINE)
+# Bullet point pattern (matches start of a line)
+_BULLET_RE = re.compile(r"[-•●○▪▸►◦*→⁃‣⦿⦾]")
 
-# Ellipsis pattern at end of line
-ELLIPSIS_END_PATTERN = re.compile(r"\.{3}\s*$|…\s*$", re.MULTILINE)
+# ── Single-pass helper ──────────────────────────────────────
 
-
-def tokenize_text(text: str) -> list[str]:
+def _compute_all_metrics(text: str) -> dict:
     """
-    Tokenize text using NLTK's word_tokenize for better handling of
-    punctuation, contractions, and special characters.
-    
-    Args:
-        text: Input text to tokenize
-        
-    Returns:
-        List of tokens/words
+    Compute every Gopher quality metric in a **single pass** over the text.
+
+    Returns a dict with keys:
+        word_count, mean_word_length, hash_ratio, ellipsis_ratio,
+        bullet_line_ratio, ellipsis_line_ratio, alphabetic_word_ratio,
+        stop_word_count
     """
-    try:
-        tokens = word_tokenize(text)
-        return tokens
-    except Exception:
-        # Fallback to simple split if NLTK fails
-        return text.split()
 
+    # ── tokenize once (fast regex) ──
+    tokens = _WORD_RE.findall(text)
+    num_tokens = len(tokens)
 
-def get_words_only(tokens: list[str]) -> list[str]:
-    """
-    Filter tokens to get only actual words (containing at least one letter).
-    Excludes pure punctuation tokens.
-    
-    Args:
-        tokens: List of tokens from tokenize_text
-        
-    Returns:
-        List of word tokens only
-    """
-    return [t for t in tokens if any(c.isalpha() for c in t)]
+    # ── word-level stats (one loop over tokens) ──
+    num_words = 0           # tokens with ≥1 alpha char
+    total_word_len = 0      # sum of char lengths of words
+    num_alpha_tokens = 0    # tokens with ≥1 alpha char (same as num_words)
+    stop_words_found = set()
 
+    lower_text_tokens_set = None  # deferred
 
-def count_words(text: str) -> list[str]:
-    """
-    Split text into words using NLTK tokenizer.
-    Returns only actual words (not pure punctuation).
-    """
-    tokens = tokenize_text(text)
-    return get_words_only(tokens)
+    for tok in tokens:
+        has_alpha = _ALPHA_RE.search(tok) is not None
+        if has_alpha:
+            num_words += 1
+            total_word_len += len(tok)
+            num_alpha_tokens += 1
+            tok_lower = tok.lower()
+            if tok_lower in STOP_WORDS:
+                stop_words_found.add(tok_lower)
 
+    mean_word_length = (total_word_len / num_words) if num_words > 0 else 0.0
 
-def get_word_count(text: str) -> int:
-    """Get the number of words in the text."""
-    return len(count_words(text))
+    # Alphabetic word ratio uses *all* tokens in the denominator
+    alphabetic_word_ratio = (num_alpha_tokens / num_tokens) if num_tokens > 0 else 0.0
 
+    # ── symbol counts (simple str.count — very fast in CPython) ──
+    hash_count = text.count("#")
+    ellipsis_count = text.count("...") + text.count("…")
+    hash_ratio = (hash_count / num_words) if num_words > 0 else 0.0
+    ellipsis_ratio = (ellipsis_count / num_words) if num_words > 0 else 0.0
 
-def get_mean_word_length(text: str) -> float:
-    """Calculate mean word length in characters."""
-    words = count_words(text)
-    if not words:
-        return 0.0
-    return sum(len(word) for word in words) / len(words)
-
-
-def get_symbol_to_word_ratio(text: str, symbol: str) -> float:
-    """
-    Calculate the ratio of a symbol to words.
-    
-    Args:
-        text: Input text
-        symbol: Symbol to count (e.g., '#' or '...')
-    
-    Returns:
-        Ratio of symbol occurrences to word count
-    """
-    words = count_words(text)
-    if not words:
-        return 0.0
-    
-    if symbol == "...":
-        # Count ellipsis (both ... and …)
-        count = text.count("...") + text.count("…")
-    else:
-        count = text.count(symbol)
-    
-    return count / len(words)
-
-
-def get_bullet_line_ratio(text: str) -> float:
-    """
-    Calculate the ratio of lines starting with a bullet point.
-    
-    Returns:
-        Ratio of bullet lines to total lines
-    """
+    # ── line-level stats (single split, single loop) ──
     lines = text.split("\n")
-    if not lines:
-        return 0.0
-    
-    # Filter out empty lines for this calculation
-    non_empty_lines = [line for line in lines if line.strip()]
-    if not non_empty_lines:
-        return 0.0
-    
+    num_non_empty = 0
     bullet_count = 0
-    for line in non_empty_lines:
-        if BULLET_PATTERNS.match(line):
+    ellipsis_line_count = 0
+
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        num_non_empty += 1
+
+        # Bullet check: first non-whitespace char is a bullet symbol
+        if _BULLET_RE.match(stripped):
             bullet_count += 1
-    
-    return bullet_count / len(non_empty_lines)
+
+        # Ellipsis-ending check
+        if stripped.endswith("...") or stripped.endswith("…"):
+            ellipsis_line_count += 1
+
+    bullet_line_ratio = (bullet_count / num_non_empty) if num_non_empty > 0 else 0.0
+    ellipsis_line_ratio = (ellipsis_line_count / num_non_empty) if num_non_empty > 0 else 0.0
+
+    return {
+        "word_count": num_words,
+        "mean_word_length": mean_word_length,
+        "hash_ratio": hash_ratio,
+        "ellipsis_ratio": ellipsis_ratio,
+        "bullet_line_ratio": bullet_line_ratio,
+        "ellipsis_line_ratio": ellipsis_line_ratio,
+        "alphabetic_word_ratio": alphabetic_word_ratio,
+        "stop_word_count": len(stop_words_found),
+    }
 
 
-def get_ellipsis_line_ratio(text: str) -> float:
-    """
-    Calculate the ratio of lines ending with an ellipsis.
-    
-    Returns:
-        Ratio of ellipsis-ending lines to total lines
-    """
-    lines = text.split("\n")
-    if not lines:
-        return 0.0
-    
-    # Filter out empty lines for this calculation
-    non_empty_lines = [line for line in lines if line.strip()]
-    if not non_empty_lines:
-        return 0.0
-    
-    ellipsis_count = 0
-    for line in non_empty_lines:
-        if line.strip().endswith("...") or line.strip().endswith("…"):
-            ellipsis_count += 1
-    
-    return ellipsis_count / len(non_empty_lines)
-
-
-def get_alphabetic_word_ratio(text: str) -> float:
-    """
-    Calculate the ratio of words containing at least one alphabetic character.
-    Uses all tokens (including punctuation) for this calculation.
-    
-    Returns:
-        Ratio of alphabetic words to total tokens
-    """
-    # Get all tokens (including punctuation) for this ratio
-    tokens = tokenize_text(text)
-    if not tokens:
-        return 0.0
-    
-    alpha_count = sum(1 for token in tokens if any(c.isalpha() for c in token))
-    return alpha_count / len(tokens)
-
-
-def count_stop_words(text: str) -> int:
-    """
-    Count how many of the required stop words appear in the text.
-    Uses NLTK tokenization for better word boundary detection.
-    
-    Returns:
-        Number of unique stop words found (0-8)
-    """
-    # Use NLTK tokenizer and convert to lowercase
-    tokens = tokenize_text(text.lower())
-    words_set = set(tokens)
-    
-    # Count unique stop words present
-    return len(STOP_WORDS.intersection(words_set))
-
+# ── Public API (unchanged signatures) ──────────────────────
 
 def gopher_quality_filter(text: str) -> Tuple[bool, dict]:
     """
@@ -227,51 +138,43 @@ def gopher_quality_filter(text: str) -> Tuple[bool, dict]:
             "stop_word_count": 0,
             "failed_checks": ["empty_or_invalid"],
         }
-    
-    # Compute all metrics
-    word_count = get_word_count(text)
-    mean_word_length = get_mean_word_length(text)
-    hash_ratio = get_symbol_to_word_ratio(text, "#")
-    ellipsis_ratio = get_symbol_to_word_ratio(text, "...")
-    bullet_line_ratio = get_bullet_line_ratio(text)
-    ellipsis_line_ratio = get_ellipsis_line_ratio(text)
-    alphabetic_word_ratio = get_alphabetic_word_ratio(text)
-    stop_word_count = count_stop_words(text)
+
+    # Compute ALL metrics in one pass
+    m = _compute_all_metrics(text)
     
     # Track failed checks
     failed_checks = []
     
     # Rule 1: Word count between 50 and 100,000
-    if word_count < 50 or word_count > 100000:
-        # print("Word count check failed:", word_count,text[:20])
+    if m["word_count"] < 50 or m["word_count"] > 100000:
         failed_checks.append("word_count")
     
     # Rule 2: Mean word length between 3 and 10
-    if mean_word_length < 3 or mean_word_length > 10:
+    if m["mean_word_length"] < 3 or m["mean_word_length"] > 10:
         failed_checks.append("mean_word_length")
     
     # Rule 3: Hash symbol ratio <= 0.1
-    if hash_ratio > 0.1:
+    if m["hash_ratio"] > 0.1:
         failed_checks.append("hash_ratio")
     
     # Rule 4: Ellipsis symbol ratio <= 0.1
-    if ellipsis_ratio > 0.1:
+    if m["ellipsis_ratio"] > 0.1:
         failed_checks.append("ellipsis_ratio")
     
     # Rule 5: Bullet point lines <= 90%
-    if bullet_line_ratio > 0.9:
+    if m["bullet_line_ratio"] > 0.9:
         failed_checks.append("bullet_line_ratio")
     
     # Rule 6: Ellipsis ending lines <= 30%
-    if ellipsis_line_ratio > 0.3:
+    if m["ellipsis_line_ratio"] > 0.3:
         failed_checks.append("ellipsis_line_ratio")
     
     # Rule 7: Alphabetic words >= 80%
-    if alphabetic_word_ratio < 0.8:
+    if m["alphabetic_word_ratio"] < 0.8:
         failed_checks.append("alphabetic_word_ratio")
     
     # Rule 8: At least 2 stop words
-    if stop_word_count < 2:
+    if m["stop_word_count"] < 2:
         failed_checks.append("stop_word_count")
     
     passes_filter = len(failed_checks) == 0
@@ -279,18 +182,18 @@ def gopher_quality_filter(text: str) -> Tuple[bool, dict]:
     details = {
         "passed": passes_filter,
         "reason": "passed" if passes_filter else failed_checks[0],
-        "word_count": word_count,
-        "mean_word_length": round(mean_word_length, 2),
-        "hash_ratio": round(hash_ratio, 4),
-        "ellipsis_ratio": round(ellipsis_ratio, 4),
-        "bullet_line_ratio": round(bullet_line_ratio, 4),
-        "ellipsis_line_ratio": round(ellipsis_line_ratio, 4),
-        "alphabetic_word_ratio": round(alphabetic_word_ratio, 4),
-        "stop_word_count": stop_word_count,
+        "word_count": m["word_count"],
+        "mean_word_length": round(m["mean_word_length"], 2),
+        "hash_ratio": round(m["hash_ratio"], 4),
+        "ellipsis_ratio": round(m["ellipsis_ratio"], 4),
+        "bullet_line_ratio": round(m["bullet_line_ratio"], 4),
+        "ellipsis_line_ratio": round(m["ellipsis_line_ratio"], 4),
+        "alphabetic_word_ratio": round(m["alphabetic_word_ratio"], 4),
+        "stop_word_count": m["stop_word_count"],
         "failed_checks": failed_checks,
     }
     
-    return passes_filter,details
+    return passes_filter, details
 
 
 def gopher_quality_filter_batch(texts: list[str]) -> list[Tuple[bool, dict]]:

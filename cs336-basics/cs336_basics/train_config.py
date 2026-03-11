@@ -31,7 +31,7 @@ class ModelConfig:
 class TrainingConfig:
     seed: int = 0
     dtype: str = "bfloat16"
-    train_batch_size: int = 128
+    train_batch_size: int = 16
     eval_batch_size: int = "${training.train_batch_size}"
     train_steps: int = 100_000
     gradient_accumulation_steps: int = 1
@@ -48,8 +48,9 @@ class TrainingConfig:
     adam_eps: float = 1e-9
     wandb_project: str | None = None
     wandb_entity: str | None = None
+    api_key: str | None = None
     log_interval: int = 20
-    save_checkpoints: bool = False
+    save_checkpoints: bool = True
 
 @dataclass
 class Config:

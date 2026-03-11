@@ -107,6 +107,10 @@ def main(cfg: Config) -> None:
             )
         )
         if cfg.training.wandb_project and cfg.training.wandb_entity:
+            # Set API key from config if provided, so wandb login isn't required
+            api_key = getattr(cfg.training, "api_key", None)
+            if api_key:
+                os.environ["WANDB_API_KEY"] = str(api_key)
             wandb.init(
                 # Set the project where this run will be logged
                 entity=cfg.training.wandb_entity,
@@ -139,6 +143,11 @@ def main(cfg: Config) -> None:
         logger.info(f"Using dtype: {torch_dtype}")
 
     amp_ctx = torch.amp.autocast(device_type="cuda", dtype=torch_dtype)
+
+    # GradScaler is needed for float16 to prevent gradient underflow/overflow → NaN.
+    # For bfloat16/float32, scaler is a no-op (enabled=False).
+    use_scaler = torch_dtype == torch.float16
+    scaler = torch.amp.GradScaler(enabled=use_scaler)
 
     # Move model to the device
     model = model.to(cfg.training.device)
@@ -211,15 +220,19 @@ def main(cfg: Config) -> None:
                     / cfg.training.gradient_accumulation_steps
                 )
 
-            loss.backward()
+            scaler.scale(loss).backward()
 
             batch_x = next_batch_x
             batch_y = next_batch_y
 
+        # Unscale gradients before clipping
+        scaler.unscale_(optimizer)
         if cfg.training.max_grad_norm is not None:
             torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.training.max_grad_norm)
 
-        optimizer.step()
+        # scaler.step skips the update if gradients contain inf/NaN
+        scaler.step(optimizer)
+        scaler.update()
         optimizer.zero_grad(set_to_none=True)
 
         loss_float = loss.item() * cfg.training.gradient_accumulation_steps

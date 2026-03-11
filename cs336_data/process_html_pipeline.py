@@ -12,13 +12,20 @@ Usage:
     python process_html_pipeline.py --max-files 10
 """
 
+import gc
 import glob
+import io
 import os
+import posixpath
 import re
+import shutil
 import sys
 import time
 from collections import defaultdict
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from multiprocessing import cpu_count
 
+import psutil
 import pyarrow as pa
 import pyarrow.parquet as pq
 from tqdm import tqdm
@@ -30,7 +37,9 @@ try:
     from cs336_data.pii_masking import mask_all_pii
     from cs336_data.toxicity import classify_nsfw, classify_toxic_speech, classify_content
     from cs336_data.quality_filter import gopher_quality_filter
-    from cs336_data.quality_classifier import classify_quality, filter_by_quality
+    from cs336_data.quality_classifier_fasttext import get_all_predictions
+    from cs336_data.lsh import minhash_lsh_deduplication_tabular_files
+    from cs336_data.jsonl_io import read_jsonl_compressed, write_jsonl_compressed, get_output_path
     from cs336_data import config
 except ModuleNotFoundError:
     # When running directly from the cs336_data directory
@@ -40,11 +49,135 @@ except ModuleNotFoundError:
     from pii_masking import mask_all_pii
     from toxicity import classify_nsfw, classify_toxic_speech, classify_content
     from quality_filter import gopher_quality_filter
-    from quality_classifier import classify_quality, filter_by_quality
+    from quality_classifier_fasttext import get_all_predictions
+    from lsh import minhash_lsh_deduplication_tabular_files
+    from jsonl_io import read_jsonl_compressed, write_jsonl_compressed, get_output_path
+
+
+# ---------------- MEMORY MONITORING UTILITIES ----------------
+def get_memory_usage() -> dict:
+    """Get current memory usage statistics.
+    
+    Returns:
+        Dictionary with memory stats in GB
+    """
+    process = psutil.Process(os.getpid())
+    mem_info = process.memory_info()
+    virtual_mem = psutil.virtual_memory()
+    
+    return {
+        "process_rss_gb": mem_info.rss / (1024 ** 3),
+        "process_vms_gb": mem_info.vms / (1024 ** 3),
+        "system_total_gb": virtual_mem.total / (1024 ** 3),
+        "system_available_gb": virtual_mem.available / (1024 ** 3),
+        "system_used_gb": virtual_mem.used / (1024 ** 3),
+        "system_percent": virtual_mem.percent,
+    }
+
+
+def get_disk_usage(path: str = "/") -> dict:
+    """Get disk usage statistics.
+    
+    Args:
+        path: Path to check disk usage for
+        
+    Returns:
+        Dictionary with disk stats in GB
+    """
+    disk = shutil.disk_usage(path)
+    return {
+        "total_gb": disk.total / (1024 ** 3),
+        "used_gb": disk.used / (1024 ** 3),
+        "free_gb": disk.free / (1024 ** 3),
+        "percent_used": (disk.used / disk.total) * 100,
+    }
+
+
+def print_memory_status(prefix: str = ""):
+    """Print current memory and disk status."""
+    mem = get_memory_usage()
+    print(f"{prefix}Memory: Process RSS={mem['process_rss_gb']:.2f}GB, "
+          f"System={mem['system_used_gb']:.2f}/{mem['system_total_gb']:.2f}GB ({mem['system_percent']:.1f}%)")
+
+
+def force_memory_cleanup():
+    """Force garbage collection and release memory."""
+    gc.collect()
+    # Force Python to release memory back to the OS (if possible)
+    try:
+        import ctypes
+        libc = ctypes.CDLL("libc.so.6")
+        libc.malloc_trim(0)
+    except Exception:
+        pass  # Not available on macOS or if libc not found
+
+
+def upload_file_to_hf_dataset(
+    local_path: str,
+    repo_id: str,
+    token: str,
+    path_in_repo: str | None = None,
+    commit_message: str | None = None,
+) -> str:
+    """Upload a file to a Hugging Face dataset repo (LFS handled by HF Hub)."""
+    try:
+        from huggingface_hub import HfApi
+    except ImportError as exc:
+        raise ImportError(
+            "huggingface_hub is required for uploads. Install with: pip install huggingface_hub"
+        ) from exc
+
+    if not os.path.exists(local_path):
+        raise FileNotFoundError(f"File not found for upload: {local_path}")
+
+    remote_path = path_in_repo or os.path.basename(local_path)
+    file_size = os.path.getsize(local_path)
+
+    api = HfApi(token=token)
+    api.create_repo(repo_id=repo_id, repo_type="dataset", exist_ok=True)
+
+    progress_bar = tqdm(
+        total=file_size,
+        desc=f"  Uploading {os.path.basename(local_path)}",
+        unit="B",
+        unit_scale=True,
+        unit_divisor=1024,
+        leave=False,
+    )
+
+    class _TqdmBufferedReader(io.BufferedReader):
+        """Buffered reader that reports read progress to tqdm."""
+
+        def read(self, size=-1):
+            chunk = super().read(size)
+            if chunk:
+                progress_bar.update(len(chunk))
+            return chunk
+
+        def readinto(self, b):
+            n = super().readinto(b)
+            if n and n > 0:
+                progress_bar.update(n)
+            return n
+
+    try:
+        with open(local_path, "rb") as raw_f:
+            with _TqdmBufferedReader(raw_f) as wrapped_f:
+                upload_url = api.upload_file(
+                    path_or_fileobj=wrapped_f,
+                    path_in_repo=remote_path,
+                    repo_id=repo_id,
+                    repo_type="dataset",
+                    commit_message=commit_message or f"Add {remote_path}",
+                )
+    finally:
+        progress_bar.close()
+    return upload_url
 
 
 # ---------------- CONFIG ----------------
 INPUT_GLOB = config.INPUT_GLOB
+INPUT_GLOB_JSON = getattr(config, "INPUT_GLOB_JSON", None)
 OUTPUT_DIR = config.OUTPUT_DIR
 TEXT_COLUMN = "text"
 BATCH_SIZE = 1000
@@ -104,6 +237,8 @@ def process_single_file(
     enable_quality_filter: bool = True,
     enable_quality_classifier: bool = True,
     max_rows: int | None = None,
+    input_format: str = "parquet",
+    output_format: str = "parquet",
 ) -> dict:
     """
     Process a single parquet file: detect HTML, extract text, identify language, mask PII, classify content, and apply quality filter.
@@ -118,7 +253,7 @@ def process_single_file(
         enable_pii_masking: Whether to mask PII (emails, phones, IPs)
         enable_content_classification: Whether to classify NSFW and toxic content
         enable_quality_filter: Whether to apply Gopher quality filtering
-        enable_quality_classifier: Whether to use NVIDIA DeBERTa quality classifier
+        enable_quality_classifier: Whether to use NVIDIA Fasttext quality classifier
         max_rows: Maximum number of rows to process per file (None for all)
         
     Returns:
@@ -148,7 +283,7 @@ def process_single_file(
             "non_english": 0,
             "nsfw": 0,
             "toxic": 0,
-            "low_quality_deberta": 0,
+            "low_quality_Fasttext": 0,
             "total_filtered": 0,
             "kept": 0,
         },
@@ -168,44 +303,29 @@ def process_single_file(
             },
         },
         "quality_classifier": {
-            "High": 0,
-            "Medium": 0,
-            "Low": 0,
+            "positive": 0,
+            "negative": 0,
+        },
+        # Per-step timing accumulators (seconds)
+        "timings": {
+            "html_detection": 0.0,
+            "html_extraction": 0.0,
+            "pii_masking": 0.0,
+            "langid": 0.0,
+            "quality_filter": 0.0,
+            "quality_classifier": 0.0,
+            "content_classification": 0.0,
+            "io_read": 0.0,
+            "io_write": 0.0,
+            "total_file": 0.0,
         },
     }
-    
-    # Read the parquet file
-    table = pq.read_table(input_path)
-    # Convert to Python dict - use to_pylist for better NumPy 2.0 compatibility
-    columns = table.column_names
-    df_dict = {col: table[col].to_pylist() for col in columns}
-    
-    if text_column not in df_dict:
-        print(f"  Warning: Column '{text_column}' not found in {input_path}")
-        return stats
-    
-    texts = df_dict[text_column]
-    
-    # Limit rows if max_rows is specified (for debugging/testing)
-    if max_rows is not None and max_rows < len(texts):
-        print(f"  Limiting to {max_rows} rows (out of {len(texts)})")
-        texts = texts[:max_rows]
-        # Also limit other columns to match
-        for col in df_dict:
-            df_dict[col] = df_dict[col][:max_rows]
-    
-    stats["total_rows"] = len(texts)
-    
-    # Process and filter each text entry sequentially
-    # Order: HTML extraction -> PII masking -> Language filter -> Quality filter -> Content classification
-    # Short-circuit: skip expensive checks if document already fails earlier filter
-    
-    filtered_results = []  # List of dicts with all info for kept documents
-    kept_indices = []  # Track original indices of kept documents
-    
-    for idx, text in enumerate(tqdm(texts, desc="  Processing rows", unit="rows", leave=False)):
-        # Track this document's data
-        doc_data = {
+
+    score_columns = {"language_score", "nsfw_score", "toxic_score", "quality_score"}
+    label_columns = {"detected_language", "nsfw_label", "toxic_label", "quality_label"}
+
+    def _empty_doc_data() -> dict:
+        return {
             "text": None,
             "detected_language": None,
             "language_score": 0.0,
@@ -216,64 +336,76 @@ def process_single_file(
             "quality_label": None,
             "quality_score": 0.0,
         }
-        
+
+    def _process_text(text: str) -> dict | None:
+        """Process a single text entry and return doc data if kept, else None."""
+        doc_data = _empty_doc_data()
+
         # Handle None texts
         if text is None:
             stats["html_types"]["none"] += 1
             stats["filtered"]["total_filtered"] += 1
-            continue
-        
-        # Step 1: HTML extraction
+            return None
+
+        # Step 1: HTML detection + extraction
+        t0 = time.perf_counter()
         is_html, html_type = is_html_content(text)
         stats["html_types"][html_type] += 1
-        
+        stats["timings"]["html_detection"] += time.perf_counter() - t0
+
         if is_html:
             stats["html_detected"] += 1
-            
-            # Convert to bytes and extract text
+
+            t0 = time.perf_counter()
             if isinstance(text, str):
                 html_bytes = text.encode("utf-8")
             else:
                 html_bytes = text
-            
+
             extracted = extract_text_from_html_bytes(html_bytes)
-            
+
             if extracted is not None:
                 current_text = extracted
                 stats["html_extracted"] += 1
             else:
-                current_text = text  # Keep original on failure
+                current_text = text
                 stats["extraction_failed"] += 1
+            stats["timings"]["html_extraction"] += time.perf_counter() - t0
         else:
             current_text = text
-        
-        # Step 2: PII masking (always apply if enabled, before filtering)
+
+        # Step 2: PII masking
         if enable_pii_masking and current_text:
+            t0 = time.perf_counter()
             current_text, pii_stats = mask_all_pii(current_text)
+            stats["timings"]["pii_masking"] += time.perf_counter() - t0
             stats["pii_masked"]["emails"] += pii_stats["emails"]
             stats["pii_masked"]["phones"] += pii_stats["phones"]
             stats["pii_masked"]["ips"] += pii_stats["ips"]
             stats["pii_masked"]["total"] += pii_stats["total"]
-        
+
         doc_data["text"] = current_text
-        
-        # Step 3: Language filter (FIRST filter - cheapest)
+
+        # Step 3: Language filter
         if enable_langid and current_text:
+            t0 = time.perf_counter()
             lang_code, lang_score = identify_language(current_text)
+            stats["timings"]["langid"] += time.perf_counter() - t0
             doc_data["detected_language"] = lang_code
             doc_data["language_score"] = lang_score
             stats["languages"][lang_code] += 1
-            
-            # Short-circuit: if not English, skip remaining filters
-            if lang_code != "en":
+
+            if lang_code != "en" or lang_score < 0.5:
                 stats["filtered"]["non_english"] += 1
                 stats["filtered"]["total_filtered"] += 1
-                continue  # Skip to next document
-        
-        # Step 4: Quality filter (SECOND filter - moderate cost, no model)
+                return None
+
+        # Step 4: Gopher quality filter
         if enable_quality_filter and current_text:
+            t0 = time.perf_counter()
             quality_passed, quality_details = gopher_quality_filter(current_text)
-            
+            stats["timings"]["quality_filter"] += time.perf_counter() - t0
+
             if quality_passed:
                 stats["quality_filter"]["passed"] += 1
             else:
@@ -281,34 +413,36 @@ def process_single_file(
                 for check in quality_details.get("failed_checks", []):
                     if check in stats["quality_filter"]["failed_reasons"]:
                         stats["quality_filter"]["failed_reasons"][check] += 1
-                # Short-circuit: if quality fails, skip content classification
                 stats["filtered"]["total_filtered"] += 1
-                continue  # Skip to next document
-        
-        # Step 5: Quality classifier using DeBERTa (THIRD filter - model-based)
-        # Only keep Medium and High quality texts, discard Low quality
+                return None
+
+        # Step 5: Fasttext quality classifier
         if enable_quality_classifier and current_text:
-            keep_text, quality_label, quality_score = filter_by_quality(current_text)
-            
-            doc_data["quality_label"] = quality_label
-            doc_data["quality_score"] = quality_score
-            stats["quality_classifier"][quality_label] += 1
-            
-            if not keep_text:  # Low quality
-                stats["filtered"]["low_quality_deberta"] += 1
+            t0 = time.perf_counter()
+            predictions = get_all_predictions(current_text)
+            stats["timings"]["quality_classifier"] += time.perf_counter() - t0
+
+            doc_data["quality_label"] = predictions["label"]
+            doc_data["quality_score"] = predictions["confidence"]
+            stats["quality_classifier"][predictions["label"]] += 1
+
+            if doc_data["quality_label"] != "positive":
+                stats["filtered"]["low_quality_Fasttext"] += 1
                 stats["filtered"]["total_filtered"] += 1
-                continue  # Skip to next document
-        
-        # Step 6: Content classification (LAST filter - most expensive, uses models)
+                return None
+
+        # Step 6: Content classification (NSFW + toxic)
         if enable_content_classification and current_text:
+            t0 = time.perf_counter()
             nsfw_label, nsfw_score = classify_nsfw(current_text)
             toxic_label, toxic_score = classify_toxic_speech(current_text)
-            
+            stats["timings"]["content_classification"] += time.perf_counter() - t0
+
             doc_data["nsfw_label"] = nsfw_label
             doc_data["nsfw_score"] = nsfw_score
             doc_data["toxic_label"] = toxic_label
             doc_data["toxic_score"] = toxic_score
-            
+
             # Update stats
             if nsfw_label == "nsfw":
                 stats["content_classification"]["nsfw"] += 1
@@ -318,92 +452,351 @@ def process_single_file(
                 stats["content_classification"]["toxic"] += 1
             else:
                 stats["content_classification"]["non_toxic"] += 1
-            
+
             # Short-circuit: if NSFW or toxic, filter out
             if nsfw_label == "nsfw":
                 stats["filtered"]["nsfw"] += 1
                 stats["filtered"]["total_filtered"] += 1
-                continue  # Skip to next document
-            
+                return None
+
             if toxic_label == "toxic":
                 stats["filtered"]["toxic"] += 1
                 stats["filtered"]["total_filtered"] += 1
-                continue  # Skip to next document
-        
-        # Document passed all filters - keep it!
+                return None
+
         stats["filtered"]["kept"] += 1
-        filtered_results.append(doc_data)
-        kept_indices.append(idx)
-    
-    # Build output dataframe from filtered results
-    if filtered_results:
-        filtered_df_dict = {}
-        
-        # Copy original columns for kept rows
-        for col in df_dict.keys():
+        return doc_data
+
+    def _build_output_columns(source_columns: list[str]) -> list[str]:
+        output_columns = list(source_columns)
+        if enable_langid:
+            output_columns.extend(["detected_language", "language_score"])
+        if enable_quality_classifier:
+            output_columns.extend(["quality_label", "quality_score"])
+        if enable_content_classification:
+            output_columns.extend(["nsfw_label", "nsfw_score", "toxic_label", "toxic_score"])
+        return output_columns
+
+    def _empty_output_data(columns: list[str]) -> dict:
+        return {col: [] for col in columns}
+
+    def _append_output_row(
+        output_data: dict,
+        source_columns: list[str],
+        row_values: dict,
+        row_idx: int,
+        doc_data: dict,
+    ):
+        for col in source_columns:
             if col == text_column:
-                # Use the processed text
-                filtered_df_dict[col] = [doc["text"] for doc in filtered_results]
+                output_data[col].append(doc_data["text"])
             else:
-                # Copy original values for kept indices
-                original_values = df_dict[col]
-                filtered_df_dict[col] = [original_values[i] for i in kept_indices]
-        
-        # Add new columns
+                output_data[col].append(row_values[col][row_idx])
         if enable_langid:
-            filtered_df_dict["detected_language"] = [doc["detected_language"] for doc in filtered_results]
-            filtered_df_dict["language_score"] = [doc["language_score"] for doc in filtered_results]
+            output_data["detected_language"].append(doc_data["detected_language"])
+            output_data["language_score"].append(doc_data["language_score"])
         if enable_quality_classifier:
-            filtered_df_dict["quality_label"] = [doc["quality_label"] for doc in filtered_results]
-            filtered_df_dict["quality_score"] = [doc["quality_score"] for doc in filtered_results]
+            output_data["quality_label"].append(doc_data["quality_label"])
+            output_data["quality_score"].append(doc_data["quality_score"])
         if enable_content_classification:
-            filtered_df_dict["nsfw_label"] = [doc["nsfw_label"] for doc in filtered_results]
-            filtered_df_dict["nsfw_score"] = [doc["nsfw_score"] for doc in filtered_results]
-            filtered_df_dict["toxic_label"] = [doc["toxic_label"] for doc in filtered_results]
-            filtered_df_dict["toxic_score"] = [doc["toxic_score"] for doc in filtered_results]
+            output_data["nsfw_label"].append(doc_data["nsfw_label"])
+            output_data["nsfw_score"].append(doc_data["nsfw_score"])
+            output_data["toxic_label"].append(doc_data["toxic_label"])
+            output_data["toxic_score"].append(doc_data["toxic_score"])
+
+    def _to_arrow_arrays(output_data: dict, output_columns: list[str], source_types: dict | None = None) -> list:
+        arrays = []
+        for key in output_columns:
+            values = output_data[key]
+            if key in score_columns:
+                arrays.append(pa.array(values, type=pa.float64()))
+            elif key in label_columns:
+                arrays.append(pa.array(values, type=pa.string()))
+            elif source_types and key in source_types:
+                arrays.append(pa.array(values, type=source_types[key]))
+            else:
+                if hasattr(values, "tolist"):
+                    values = values.tolist()
+                arrays.append(pa.array(values))
+        return arrays
+
+    # Check memory before starting
+    print_memory_status("  [BEFORE] ")
+
+    file_start_time = time.perf_counter()
+
+    if input_format == "parquet":
+        parquet_file = pq.ParquetFile(input_path)
+        source_columns = parquet_file.schema.names
+
+        if text_column not in source_columns:
+            print(f"  Warning: Column '{text_column}' not found in {input_path}")
+            return stats
+
+        output_columns = _build_output_columns(source_columns)
+        source_types = {field.name: field.type for field in parquet_file.schema_arrow}
+
+        rows_available = parquet_file.metadata.num_rows if parquet_file.metadata else None
+        rows_to_process = rows_available
+        if max_rows is not None:
+            if rows_available is None:
+                rows_to_process = max_rows
+            else:
+                rows_to_process = min(max_rows, rows_available)
+                if max_rows < rows_available:
+                    print(f"  Limiting to {max_rows} rows (out of {rows_available})")
+
+        if rows_to_process is not None:
+            stats["total_rows"] = rows_to_process
+
+        parquet_writer = None
+        output_data = _empty_output_data(output_columns)
+        rows_processed = 0
+        flush_every = max(batch_size, 1)
+
+        def _flush_output(force: bool = False):
+            nonlocal parquet_writer
+            if output_format != "parquet":
+                return
+            buffered_rows = len(output_data[text_column]) if text_column in output_data else 0
+            if buffered_rows == 0:
+                return
+            if not force and buffered_rows < flush_every:
+                return
+
+            arrays = _to_arrow_arrays(output_data, output_columns, source_types=source_types)
+            output_table = pa.table(dict(zip(output_columns, arrays)))
+            if output_format == "parquet":
+                if parquet_writer is None:
+                    parquet_writer = pq.ParquetWriter(output_path, output_table.schema, compression=compression)
+                parquet_writer.write_table(output_table)
+            del output_table, arrays
+
+            for col in output_columns:
+                output_data[col].clear()
+
+        progress = tqdm(
+            total=rows_to_process,
+            desc="  Processing rows",
+            unit="rows",
+            leave=False,
+        )
+
+        for batch_idx, batch in enumerate(parquet_file.iter_batches(batch_size=batch_size, columns=source_columns)):
+            if rows_to_process is not None and rows_processed >= rows_to_process:
+                break
+
+            t_io = time.perf_counter()
+            batch_dict = {col: batch.column(i).to_pylist() for i, col in enumerate(source_columns)}
+            stats["timings"]["io_read"] += time.perf_counter() - t_io
+            batch_rows = len(batch_dict[text_column])
+
+            if rows_to_process is not None:
+                remaining = rows_to_process - rows_processed
+                if batch_rows > remaining:
+                    for col in source_columns:
+                        batch_dict[col] = batch_dict[col][:remaining]
+                    batch_rows = remaining
+
+            for row_idx in range(batch_rows):
+                text = batch_dict[text_column][row_idx]
+                doc_data = _process_text(text)
+                if doc_data is None:
+                    continue
+
+                _append_output_row(output_data, source_columns, batch_dict, row_idx, doc_data)
+
+            rows_processed += batch_rows
+            progress.update(batch_rows)
+            if output_format == "parquet":
+                t_io = time.perf_counter()
+                _flush_output(force=False)
+                stats["timings"]["io_write"] += time.perf_counter() - t_io
+
+            del batch, batch_dict
+            if (batch_idx + 1) % 10 == 0:
+                gc.collect()
+
+        progress.close()
+
+        if rows_to_process is None:
+            stats["total_rows"] = rows_processed
+
+        if output_format == "parquet":
+            t_io = time.perf_counter()
+            _flush_output(force=True)
+            if parquet_writer is not None:
+                parquet_writer.close()
+            else:
+                # Preserve prior behavior: still write an empty parquet output file.
+                empty_arrays = _to_arrow_arrays(output_data, output_columns, source_types=source_types)
+                output_table = pa.table(dict(zip(output_columns, empty_arrays)))
+                pq.write_table(output_table, output_path, compression=compression)
+                del output_table, empty_arrays
+            stats["timings"]["io_write"] += time.perf_counter() - t_io
+        else:
+            actual_output_path = write_jsonl_compressed(output_path, output_data, compression=compression)
+            if actual_output_path:
+                output_path = actual_output_path
+
+        del output_data
     else:
-        filtered_df_dict = {col: [] for col in df_dict.keys()}
-        if enable_langid:
-            filtered_df_dict["detected_language"] = []
-            filtered_df_dict["language_score"] = []
-        if enable_quality_classifier:
-            filtered_df_dict["quality_label"] = []
-            filtered_df_dict["quality_score"] = []
-        if enable_content_classification:
-            filtered_df_dict["nsfw_label"] = []
-            filtered_df_dict["nsfw_score"] = []
-            filtered_df_dict["toxic_label"] = []
-            filtered_df_dict["toxic_score"] = []
-    
+        # Keep JSONL input path behavior as-is (already row-limited during read).
+        df_dict = read_jsonl_compressed(input_path, text_column, max_rows=max_rows)
+        if text_column not in df_dict:
+            print(f"  Warning: Column '{text_column}' not found in {input_path}")
+            return stats
+
+        source_columns = list(df_dict.keys())
+        output_columns = _build_output_columns(source_columns)
+        output_data = _empty_output_data(output_columns)
+        texts = df_dict[text_column]
+        stats["total_rows"] = len(texts)
+
+        for idx, text in enumerate(tqdm(texts, desc="  Processing rows", unit="rows", leave=False)):
+            doc_data = _process_text(text)
+            if doc_data is None:
+                continue
+
+            _append_output_row(output_data, source_columns, df_dict, idx, doc_data)
+
+        arrays = _to_arrow_arrays(output_data, output_columns)
+        if output_format == "parquet":
+            output_table = pa.table(dict(zip(output_columns, arrays)))
+            pq.write_table(output_table, output_path, compression=compression)
+            del output_table
+        else:
+            actual_output_path = write_jsonl_compressed(output_path, output_data, compression=compression)
+            if actual_output_path:
+                output_path = actual_output_path
+
+        del arrays, output_data, df_dict, texts
+
     print(f"  Filtered: {stats['filtered']['total_filtered']} rows removed, {stats['filtered']['kept']} rows kept")
     print(f"    - Non-English: {stats['filtered']['non_english']}")
     print(f"    - Gopher quality failed: {stats['quality_filter']['failed']}")
-    print(f"    - DeBERTa low quality: {stats['filtered']['low_quality_deberta']}")
+    print(f"    - Fasttext low quality: {stats['filtered']['low_quality_Fasttext']}")
     print(f"    - NSFW: {stats['filtered']['nsfw']}")
     print(f"    - Toxic: {stats['filtered']['toxic']}")
-    
-    # Write to output parquet - handle NumPy 2.0 compatibility
-    # Convert to PyArrow arrays explicitly to avoid copy issues
-    arrays = []
-    names = []
-    for key, values in filtered_df_dict.items():
-        names.append(key)
-        if key in ("language_score", "nsfw_score", "toxic_score", "quality_score"):
-            # Ensure float array
-            arrays.append(pa.array(values, type=pa.float64()))
-        elif key in ("detected_language", "nsfw_label", "toxic_label", "quality_label"):
-            # Ensure string array with nulls
-            arrays.append(pa.array(values, type=pa.string()))
-        else:
-            # Let PyArrow infer the type, convert to list if needed
-            if hasattr(values, 'tolist'):
-                values = values.tolist()
-            arrays.append(pa.array(values))
-    
-    output_table = pa.table(dict(zip(names, arrays)))
-    pq.write_table(output_table, output_path, compression=compression)
-    
+
+    # Record total file time
+    stats["timings"]["total_file"] = time.perf_counter() - file_start_time
+
+    # Print per-step timing breakdown
+    t = stats["timings"]
+    total_t = t["total_file"] or 1e-9
+    print(f"\n  ⏱  TIMING PROFILE (total {total_t:.2f}s):")
+    print(f"    {'Step':<28} {'Time (s)':>10} {'% of total':>12}")
+    print(f"    {'-'*52}")
+    for step_name, step_time in [
+        ("I/O Read (parquet decode)", t["io_read"]),
+        ("HTML Detection",           t["html_detection"]),
+        ("HTML Extraction",          t["html_extraction"]),
+        ("PII Masking",              t["pii_masking"]),
+        ("Language ID (FastText)",   t["langid"]),
+        ("Gopher Quality Filter",   t["quality_filter"]),
+        ("Fasttext Quality Clf",    t["quality_classifier"]),
+        ("Content Classification",  t["content_classification"]),
+        ("I/O Write (parquet enc)",  t["io_write"]),
+    ]:
+        pct = (step_time / total_t) * 100 if total_t > 0 else 0
+        bar = "█" * int(pct / 2)
+        print(f"    {step_name:<28} {step_time:>10.2f} {pct:>10.1f}%  {bar}")
+    accounted = sum([t["io_read"], t["html_detection"], t["html_extraction"],
+                     t["pii_masking"], t["langid"], t["quality_filter"],
+                     t["quality_classifier"], t["content_classification"], t["io_write"]])
+    overhead = total_t - accounted
+    pct_oh = (overhead / total_t) * 100 if total_t > 0 else 0
+    print(f"    {'Overhead / other':<28} {overhead:>10.2f} {pct_oh:>10.1f}%")
+    print()
+
+    gc.collect()
+    print_memory_status("  [AFTER] ")
+
     return stats
+
+
+def _merge_stats(total_stats: dict, file_stats: dict, enable_flags: dict) -> None:
+    """Merge per-file stats into total_stats in-place."""
+    total_stats["files_processed"] += 1
+    total_stats["total_rows"] += file_stats["total_rows"]
+    total_stats["html_detected"] += file_stats["html_detected"]
+    total_stats["html_extracted"] += file_stats["html_extracted"]
+    total_stats["extraction_failed"] += file_stats["extraction_failed"]
+
+    for html_type, count in file_stats["html_types"].items():
+        total_stats["html_types"][html_type] += count
+
+    if enable_flags.get("langid"):
+        for lang, count in file_stats["languages"].items():
+            total_stats["languages"][lang] += count
+
+    if enable_flags.get("pii"):
+        for key in ("emails", "phones", "ips", "total"):
+            total_stats["pii_masked"][key] += file_stats["pii_masked"][key]
+
+    if enable_flags.get("content_classification"):
+        for key in ("nsfw", "non_nsfw", "toxic", "non_toxic"):
+            total_stats["content_classification"][key] += file_stats["content_classification"][key]
+
+    for key in ("non_english", "nsfw", "toxic", "total_filtered", "kept"):
+        total_stats["filtered"][key] += file_stats["filtered"].get(key, 0)
+    total_stats["filtered"]["low_quality_Fasttext"] += file_stats["filtered"].get("low_quality_Fasttext", 0)
+
+    if enable_flags.get("quality_filter"):
+        total_stats["quality_filter"]["passed"] += file_stats["quality_filter"]["passed"]
+        total_stats["quality_filter"]["failed"] += file_stats["quality_filter"]["failed"]
+        for reason, count in file_stats["quality_filter"]["failed_reasons"].items():
+            total_stats["quality_filter"]["failed_reasons"][reason] += count
+
+    if enable_flags.get("quality_classifier"):
+        for ql in ("positive", "negative"):
+            total_stats["quality_classifier"][ql] += file_stats["quality_classifier"].get(ql, 0)
+
+    # Aggregate per-step timings (sum of CPU-seconds across workers)
+    if "timings" in file_stats:
+        if "timings" not in total_stats:
+            total_stats["timings"] = {}
+        for step, secs in file_stats["timings"].items():
+            total_stats["timings"][step] = total_stats["timings"].get(step, 0.0) + secs
+
+
+def _process_file_worker(kwargs: dict) -> dict:
+    """
+    Worker function for multiprocessing.  Receives a dict of keyword arguments,
+    calls process_single_file, and returns a result dict with the stats and
+    output path.
+
+    Each worker process will lazily import / load ML models on first use
+    (FastText, toxicity classifiers, etc.) — this is fine because the
+    underlying libraries cache models after the first load inside each process.
+    """
+    input_path = kwargs["input_path"]
+    output_path = kwargs["output_path"]
+    worker_id = kwargs.pop("worker_id", "?")
+
+    try:
+        file_stats = process_single_file(**{
+            k: v for k, v in kwargs.items() if k != "worker_id"
+        })
+        return {
+            "success": True,
+            "input_path": input_path,
+            "output_path": output_path,
+            "stats": file_stats,
+            "worker_id": worker_id,
+            "error": None,
+        }
+    except Exception as e:
+        import traceback
+        return {
+            "success": False,
+            "input_path": input_path,
+            "output_path": output_path,
+            "stats": None,
+            "worker_id": worker_id,
+            "error": traceback.format_exc(),
+        }
 
 
 def run_pipeline(
@@ -419,13 +812,21 @@ def run_pipeline(
     enable_content_classification: bool = True,
     enable_quality_filter: bool = True,
     enable_quality_classifier: bool = True,
+    enable_deduplication: bool = True,
     max_rows: int | None = 1000,  # DEBUG: Limit rows per file (set to None for all rows)
+    input_format: str = "parquet",  # "parquet" or "jsonl"
+    output_format: str = "parquet",  # "parquet" or "jsonl"
+    push_to_hf: bool = False,
+    hf_repo_id: str | None = None,
+    hf_path_prefix: str = "",
+    delete_local_after_hf_upload: bool = True,
+    num_workers: int = 1,
 ):
     """
     Run the full HTML extraction, language identification, PII masking, content classification, and quality filtering pipeline.
     
     Args:
-        input_glob: Glob pattern for input parquet files
+        input_glob: Glob pattern for input files
         output_dir: Directory to write processed files
         text_column: Column name containing text/HTML content
         batch_size: Batch size for processing
@@ -437,6 +838,12 @@ def run_pipeline(
         enable_content_classification: Whether to classify NSFW and toxic content
         enable_quality_filter: Whether to apply Gopher quality filtering
         max_rows: Maximum number of rows to process per file (None for all, default: 1000 for debugging)
+        input_format: Input file format ("parquet" or "jsonl")
+        output_format: Output file format ("parquet" or "jsonl")
+        push_to_hf: Upload each processed file to HF dataset repo
+        hf_repo_id: HF dataset repo in format "username/repo"
+        hf_path_prefix: Optional subdirectory within the dataset repo
+        delete_local_after_hf_upload: Delete local file after successful upload
     """
     # Create output directory
     os.makedirs(output_dir, exist_ok=True)
@@ -461,12 +868,38 @@ def run_pipeline(
         input_files = all_input_files[start_index:end_index]
     else:
         input_files = all_input_files[start_index:]
+
+    # Read dedup parameters from central config (override CLI args)
+    dedup_num_hashes = getattr(config, "DEDUP_NUM_HASHES", 100)
+    dedup_num_bands = getattr(config, "DEDUP_NUM_BANDS", 10)
+    dedup_ngrams = getattr(config, "DEDUP_NGRAMS", 5)
+    dedup_jaccard_threshold = getattr(config, "DEDUP_JACCARD_THRESHOLD", 0.8)
+    # Allow global enable flag in config to disable dedup regardless of CLI
+    if not getattr(config, "DEDUPLICATION_ENABLED", True):
+        enable_deduplication = False
+
+    hf_repo_id = hf_repo_id or getattr(config, "HUGGINGFACE_DATASET_REPO", "")
+    hf_token = getattr(config, "HUGGINGFACE_KEY", "")
+    hf_path_prefix = hf_path_prefix or getattr(config, "HUGGINGFACE_DATASET_PATH_PREFIX", "")
+    hf_path_prefix = hf_path_prefix.strip("/")
+
+    if push_to_hf and not hf_repo_id:
+        raise ValueError("HF upload enabled but no repo configured. Set --hf-repo-id or config.HUGGINGFACE_DATASET_REPO")
+    if push_to_hf and not hf_token:
+        raise ValueError("HF upload enabled but config.HUGGINGFACE_KEY is empty")
+    if push_to_hf and enable_deduplication and delete_local_after_hf_upload:
+        raise ValueError(
+            "delete_local_after_hf_upload cannot be used with deduplication. "
+            "Disable dedup or keep local files until dedup completes."
+        )
     
     print("=" * 60)
     print("HTML to Text Extraction Pipeline with Language ID & PII Masking")
     print("=" * 60)
     print(f"Input pattern: {input_glob}")
+    print(f"Input format: {input_format.upper()}")
     print(f"Output directory: {output_dir}")
+    print(f"Output format: {output_format.upper()}")
     print(f"Total files available: {total_available}")
     print(f"Start index: {start_index}")
     print(f"Max files to process: {max_files if max_files else 'ALL'}")
@@ -477,7 +910,17 @@ def run_pipeline(
     print(f"PII masking: {'ENABLED' if enable_pii_masking else 'DISABLED'}")
     print(f"Content classification: {'ENABLED' if enable_content_classification else 'DISABLED'}")
     print(f"Quality filter (Gopher): {'ENABLED' if enable_quality_filter else 'DISABLED'}")
-    print(f"Quality classifier (DeBERTa): {'ENABLED' if enable_quality_classifier else 'DISABLED'}")
+    print(f"Quality classifier (Fasttext): {'ENABLED' if enable_quality_classifier else 'DISABLED'}")
+    print(f"Deduplication (MinHash+LSH): {'ENABLED' if enable_deduplication else 'DISABLED'}")
+    print(f"Parallel workers: {num_workers}")
+    print(f"Hugging Face upload: {'ENABLED' if push_to_hf else 'DISABLED'}")
+    if push_to_hf:
+        print(f"  HF dataset repo: {hf_repo_id}")
+        print(f"  HF repo path prefix: {hf_path_prefix or '(root)'}")
+        print(f"  Delete local file after upload: {'YES' if delete_local_after_hf_upload else 'NO'}")
+    if enable_deduplication:
+        print(f"  Hashes={dedup_num_hashes}, Bands={dedup_num_bands}, "
+              f"N-grams={dedup_ngrams}, Threshold={dedup_jaccard_threshold}")
     print("=" * 60)
     
     # Aggregate statistics
@@ -505,7 +948,7 @@ def run_pipeline(
             "non_english": 0,
             "nsfw": 0,
             "toxic": 0,
-            "low_quality_deberta": 0,
+            "low_quality_Fasttext": 0,
             "total_filtered": 0,
             "kept": 0,
         },
@@ -525,115 +968,313 @@ def run_pipeline(
             },
         },
         "quality_classifier": {
-            "High": 0,
-            "Medium": 0,
-            "Low": 0,
+            "positive": 0,
+            "negative": 0,
+        },
+        "huggingface": {
+            "uploaded_files": 0,
+            "upload_failed": 0,
+            "uploaded_bytes": 0,
+            "deleted_local_files": 0,
+        },
+        "deduplication": {
+            "total_docs_before": 0,
+            "total_docs_after": 0,
+            "duplicates_removed": 0,
+            "candidate_pairs": 0,
+            "verified_pairs": 0,
+            "files_rewritten": 0,
         },
     }
     
     start_time = time.time()
     
-    # Process each file
-    for i, input_path in enumerate(tqdm(input_files, desc="Processing files")):
-        filename = os.path.basename(input_path)
-        output_path = os.path.join(output_dir, filename)
+    # Track which output files were actually written in THIS run
+    output_files_this_run: list[str] = []
+
+    # Build the list of per-file job kwargs
+    file_jobs: list[dict] = []
+    for i, input_path in enumerate(input_files):
+        output_path = get_output_path(input_path, output_dir, input_format, output_format)
+        file_jobs.append({
+            "input_path": input_path,
+            "output_path": output_path,
+            "text_column": text_column,
+            "batch_size": batch_size,
+            "compression": compression,
+            "enable_langid": enable_langid,
+            "enable_pii_masking": enable_pii_masking,
+            "enable_content_classification": enable_content_classification,
+            "enable_quality_filter": enable_quality_filter,
+            "enable_quality_classifier": enable_quality_classifier,
+            "max_rows": max_rows,
+            "input_format": input_format,
+            "output_format": output_format,
+            "worker_id": i,
+        })
+
+    enable_flags = {
+        "langid": enable_langid,
+        "pii": enable_pii_masking,
+        "content_classification": enable_content_classification,
+        "quality_filter": enable_quality_filter,
+        "quality_classifier": enable_quality_classifier,
+    }
+
+    def _print_file_result(result: dict, file_idx: int, total_files: int):
+        """Print per-file stats from a completed worker result."""
+        filename = os.path.basename(result["input_path"])
+        if not result["success"]:
+            print(f"\n[{file_idx+1}/{total_files}] ERROR processing {filename}:")
+            print(result["error"])
+            return
+
+        fs = result["stats"]
+        print(f"\n[{file_idx+1}/{total_files}] Done: {filename}")
+        print(f"  Filtered: {fs['filtered']['total_filtered']} rows removed, {fs['filtered']['kept']} rows kept")
+        print(f"  Rows: {fs['total_rows']:,}  |  HTML: {fs['html_detected']:,}  |  Extracted: {fs['html_extracted']:,}")
+
+        if enable_pii_masking and fs["pii_masked"]["total"] > 0:
+            pii = fs["pii_masked"]
+            print(f"  PII masked: {pii['total']} (emails:{pii['emails']}, phones:{pii['phones']}, IPs:{pii['ips']})")
+
+        if enable_content_classification:
+            cc = fs["content_classification"]
+            print(f"  Content: NSFW:{cc['nsfw']}, Non-NSFW:{cc['non_nsfw']}, Toxic:{cc['toxic']}, Non-Toxic:{cc['non_toxic']}")
+
+        if enable_quality_classifier:
+            qc = fs["quality_classifier"]
+            print(f"  Quality (Fasttext): Positive:{qc['positive']}, Negative:{qc['negative']}")
+
+        if enable_langid and fs["languages"]:
+            top_langs = sorted(fs["languages"].items(), key=lambda x: x[1], reverse=True)[:3]
+            lang_str = ", ".join([f"{get_language_name(l)}:{c}" for l, c in top_langs])
+            print(f"  Top languages: {lang_str}")
+
+    # ==================================================================
+    # PROCESS FILES (parallel if num_workers > 1, else sequential)
+    # ==================================================================
+    effective_workers = min(num_workers, len(file_jobs))
+
+    if effective_workers > 1:
+        print(f"\n🚀 Processing {len(file_jobs)} files with {effective_workers} parallel workers...\n")
+
+        with ProcessPoolExecutor(max_workers=effective_workers) as executor:
+            future_to_idx = {
+                executor.submit(_process_file_worker, job): idx
+                for idx, job in enumerate(file_jobs)
+            }
+
+            progress = tqdm(total=len(file_jobs), desc="Processing files", unit="file")
+
+            for future in as_completed(future_to_idx):
+                idx = future_to_idx[future]
+                result = future.result()
+                progress.update(1)
+
+                _print_file_result(result, idx, len(file_jobs))
+
+                if result["success"]:
+                    output_files_this_run.append(result["output_path"])
+                    _merge_stats(total_stats, result["stats"], enable_flags)
+
+                    # HF upload (sequential — after each file completes)
+                    if push_to_hf:
+                        opath = result["output_path"]
+                        remote_file_name = os.path.basename(opath)
+                        remote_path = (
+                            posixpath.join(hf_path_prefix, remote_file_name)
+                            if hf_path_prefix else remote_file_name
+                        )
+                        try:
+                            file_size = os.path.getsize(opath) if os.path.exists(opath) else 0
+                            upload_url = upload_file_to_hf_dataset(
+                                local_path=opath, repo_id=hf_repo_id,
+                                token=hf_token, path_in_repo=remote_path,
+                                commit_message=f"Upload processed file: {remote_file_name}",
+                            )
+                            total_stats["huggingface"]["uploaded_files"] += 1
+                            total_stats["huggingface"]["uploaded_bytes"] += file_size
+                            print(f"  Uploaded to HF: {upload_url}")
+                            if delete_local_after_hf_upload and os.path.exists(opath):
+                                os.remove(opath)
+                                total_stats["huggingface"]["deleted_local_files"] += 1
+                        except Exception:
+                            total_stats["huggingface"]["upload_failed"] += 1
+                            import traceback
+                            traceback.print_exc()
+
+            progress.close()
+    else:
+        # Sequential fallback (num_workers=1 or single file)
+        print(f"\n📄 Processing {len(file_jobs)} files sequentially...\n")
+
+        for idx, job in enumerate(tqdm(file_jobs, desc="Processing files")):
+            result = _process_file_worker(job)
+            _print_file_result(result, idx, len(file_jobs))
+
+            if result["success"]:
+                output_files_this_run.append(result["output_path"])
+                _merge_stats(total_stats, result["stats"], enable_flags)
+
+                if push_to_hf:
+                    opath = result["output_path"]
+                    remote_file_name = os.path.basename(opath)
+                    remote_path = (
+                        posixpath.join(hf_path_prefix, remote_file_name)
+                        if hf_path_prefix else remote_file_name
+                    )
+                    try:
+                        file_size = os.path.getsize(opath) if os.path.exists(opath) else 0
+                        upload_url = upload_file_to_hf_dataset(
+                            local_path=opath, repo_id=hf_repo_id,
+                            token=hf_token, path_in_repo=remote_path,
+                            commit_message=f"Upload processed file: {remote_file_name}",
+                        )
+                        total_stats["huggingface"]["uploaded_files"] += 1
+                        total_stats["huggingface"]["uploaded_bytes"] += file_size
+                        print(f"  Uploaded to HF: {upload_url}")
+                        if delete_local_after_hf_upload and os.path.exists(opath):
+                            os.remove(opath)
+                            total_stats["huggingface"]["deleted_local_files"] += 1
+                    except Exception:
+                        total_stats["huggingface"]["upload_failed"] += 1
+                        import traceback
+                        traceback.print_exc()
+
+            force_memory_cleanup()
+    
+    print_memory_status("\n  [AFTER ALL FILES] ")
+    
+    # ==================================================================
+    # DEDUPLICATION STEP (runs only on files processed in THIS run)
+    # ==================================================================
+    if enable_deduplication:
+        print("\n")
+        print("=" * 60)
+        print("RUNNING DEDUPLICATION (MinHash + LSH)")
+        print("=" * 60)
+        print(f"  Hashes: {dedup_num_hashes}  |  Bands: {dedup_num_bands}  |  "
+              f"N-grams: {dedup_ngrams}  |  Threshold: {dedup_jaccard_threshold}")
+        print_memory_status("  [BEFORE DEDUP] ")
         
-        print(f"\n[{i+1}/{len(input_files)}] Processing: {filename}")
+        dedup_start = time.time()
         
-        try:
-            file_stats = process_single_file(
-                input_path=input_path,
-                output_path=output_path,
+        # Use only files processed in THIS run (not all files in output_dir)
+        output_files = sorted(output_files_this_run)
+        
+        # Helper to count rows from output file (parquet or jsonl)
+        def get_output_file_row_count(file_path: str) -> int:
+            """Count rows in an output file without loading full text content."""
+            if file_path.endswith('.parquet'):
+                pf = pq.ParquetFile(file_path)
+                return pf.metadata.num_rows if pf.metadata else 0
+            else:
+                # JSONL format fallback (loads only for counting)
+                data = read_jsonl_compressed(file_path, text_column)
+                return len(data.get(text_column, []))
+        
+        # --- DEBUG: Check actual row counts before deduplication -----------
+        print(f"\n🔍 DEBUG: Checking row counts in {len(output_files)} files from THIS run:")
+        total_debug_rows = 0
+        for i, file_path in enumerate(output_files):
+            num_rows = get_output_file_row_count(file_path)
+            total_debug_rows += num_rows
+            print(f"  [{i+1}] {os.path.basename(file_path)}: {num_rows:,} rows")
+        print(f"  TOTAL DEBUG ROWS: {total_debug_rows:,}")
+        expected_files = len(output_files)
+        print(f"  Expected ({expected_files} files × up to {max_rows or 'ALL'} rows kept after filters)")
+        print()
+        
+        # --- 1. Deduplicate directly from output file paths ----------
+        if not output_files:
+            print("  No output files from this run — skipping dedup.")
+        else:
+            dedup_result = minhash_lsh_deduplication_tabular_files(
+                input_files=output_files,
                 text_column=text_column,
+                num_hashes=dedup_num_hashes,
+                num_bands=dedup_num_bands,
+                ngrams=dedup_ngrams,
+                jaccard_threshold=dedup_jaccard_threshold,
                 batch_size=batch_size,
-                compression=compression,
-                enable_langid=enable_langid,
-                enable_pii_masking=enable_pii_masking,
-                enable_content_classification=enable_content_classification,
-                enable_quality_filter=enable_quality_filter,
-                enable_quality_classifier=enable_quality_classifier,
-                max_rows=max_rows,
+                verbose=True,
             )
+
+            total_stats["deduplication"]["total_docs_before"] = dedup_result["total"]
+            total_stats["deduplication"]["candidate_pairs"] = dedup_result["candidate_pairs_checked"]
+            total_stats["deduplication"]["verified_pairs"] = dedup_result["verified_pairs"]
+            total_stats["deduplication"]["total_docs_after"] = dedup_result["kept"]
+            total_stats["deduplication"]["duplicates_removed"] = dedup_result["removed"]
+
+            print(f"  Total documents across {len(output_files)} files: {dedup_result['total']:,}")
+            print(f"  Candidate duplicate pairs: {dedup_result['candidate_pairs_checked']:,}")
+            print(f"  Verified duplicate pairs (Jaccard ≥ {dedup_jaccard_threshold}): {dedup_result['verified_pairs']:,}")
+            print(f"  Documents kept: {dedup_result['kept']:,}  |  Removed: {dedup_result['removed']:,}")
+
+            # --- 2. Rewrite output files without duplicates -----------
+            duplicates_removed = dedup_result["removed"]
+            if duplicates_removed > 0:
+                keep_rows_per_file = dedup_result["keep_rows_per_file"]
+
+                files_rewritten = 0
+                for file_idx, file_path in enumerate(output_files):
+                    keep_rows = keep_rows_per_file.get(file_idx)
+
+                    if file_path.endswith('.parquet'):
+                        tbl = pq.read_table(file_path)
+                        original_len = tbl.num_rows
+
+                        if keep_rows is None:
+                            keep_mask = [False] * original_len
+                        else:
+                            keep_mask = [r in keep_rows for r in range(original_len)]
+
+                        kept_count = sum(keep_mask)
+
+                        if kept_count < original_len:
+                            mask_array = pa.array(keep_mask, type=pa.bool_())
+                            filtered_tbl = tbl.filter(mask_array)
+                            pq.write_table(filtered_tbl, file_path, compression=compression)
+                            files_rewritten += 1
+                            print(f"    Rewrote {os.path.basename(file_path)}: "
+                                  f"{original_len} → {kept_count} rows "
+                                  f"(-{original_len - kept_count})")
+                            del filtered_tbl, mask_array
+
+                        del tbl
+                    else:
+                        data = read_jsonl_compressed(file_path, text_column)
+                        original_len = len(data.get(text_column, []))
+                        keep_indices = keep_rows if keep_rows is not None else set()
+
+                        filtered_data = {}
+                        for key, values in data.items():
+                            filtered_data[key] = [v for i, v in enumerate(values) if i in keep_indices]
+
+                        kept_count = len(filtered_data.get(text_column, []))
+                        if kept_count < original_len:
+                            write_jsonl_compressed(file_path, filtered_data, compression=compression)
+                            files_rewritten += 1
+                            print(f"    Rewrote {os.path.basename(file_path)}: "
+                                  f"{original_len} → {kept_count} rows "
+                                  f"(-{original_len - kept_count})")
+
+                        del data, filtered_data
+
+                    gc.collect()
+
+                total_stats["deduplication"]["files_rewritten"] = files_rewritten
+                print(f"  Files rewritten: {files_rewritten}")
+            else:
+                print("  No duplicates found — output files unchanged.")
+
+            del dedup_result
+            gc.collect()
             
-            # Update aggregate statistics
-            total_stats["files_processed"] += 1
-            total_stats["total_rows"] += file_stats["total_rows"]
-            total_stats["html_detected"] += file_stats["html_detected"]
-            total_stats["html_extracted"] += file_stats["html_extracted"]
-            total_stats["extraction_failed"] += file_stats["extraction_failed"]
-            
-            for html_type, count in file_stats["html_types"].items():
-                total_stats["html_types"][html_type] += count
-            
-            # Aggregate language stats
-            if enable_langid:
-                for lang, count in file_stats["languages"].items():
-                    total_stats["languages"][lang] += count
-            
-            # Aggregate PII stats
-            if enable_pii_masking:
-                total_stats["pii_masked"]["emails"] += file_stats["pii_masked"]["emails"]
-                total_stats["pii_masked"]["phones"] += file_stats["pii_masked"]["phones"]
-                total_stats["pii_masked"]["ips"] += file_stats["pii_masked"]["ips"]
-                total_stats["pii_masked"]["total"] += file_stats["pii_masked"]["total"]
-            
-            # Aggregate content classification stats
-            if enable_content_classification:
-                total_stats["content_classification"]["nsfw"] += file_stats["content_classification"]["nsfw"]
-                total_stats["content_classification"]["non_nsfw"] += file_stats["content_classification"]["non_nsfw"]
-                total_stats["content_classification"]["toxic"] += file_stats["content_classification"]["toxic"]
-                total_stats["content_classification"]["non_toxic"] += file_stats["content_classification"]["non_toxic"]
-            
-            # Aggregate filtering stats
-            total_stats["filtered"]["non_english"] += file_stats["filtered"]["non_english"]
-            total_stats["filtered"]["nsfw"] += file_stats["filtered"]["nsfw"]
-            total_stats["filtered"]["toxic"] += file_stats["filtered"]["toxic"]
-            total_stats["filtered"]["low_quality_deberta"] += file_stats["filtered"].get("low_quality_deberta", 0)
-            total_stats["filtered"]["total_filtered"] += file_stats["filtered"]["total_filtered"]
-            total_stats["filtered"]["kept"] += file_stats["filtered"]["kept"]
-            
-            # Aggregate quality filter stats
-            if enable_quality_filter:
-                total_stats["quality_filter"]["passed"] += file_stats["quality_filter"]["passed"]
-                total_stats["quality_filter"]["failed"] += file_stats["quality_filter"]["failed"]
-                for reason, count in file_stats["quality_filter"]["failed_reasons"].items():
-                    total_stats["quality_filter"]["failed_reasons"][reason] += count
-            
-            # Aggregate quality classifier stats
-            if enable_quality_classifier:
-                for quality_level in ("High", "Medium", "Low"):
-                    total_stats["quality_classifier"][quality_level] += file_stats["quality_classifier"].get(quality_level, 0)
-            
-            # Print file-level stats
-            print(f"  Rows: {file_stats['total_rows']:,}")
-            print(f"  HTML detected: {file_stats['html_detected']:,}")
-            print(f"  Extracted: {file_stats['html_extracted']:,}")
-            print(f"  Failed: {file_stats['extraction_failed']:,}")
-            
-            # Print PII masking stats for this file
-            if enable_pii_masking and file_stats["pii_masked"]["total"] > 0:
-                pii = file_stats["pii_masked"]
-                print(f"  PII masked: {pii['total']} (emails:{pii['emails']}, phones:{pii['phones']}, IPs:{pii['ips']})")
-            
-            # Print content classification stats for this file
-            if enable_content_classification:
-                cc = file_stats["content_classification"]
-                print(f"  Content: NSFW:{cc['nsfw']}, Non-NSFW:{cc['non_nsfw']}, Toxic:{cc['toxic']}, Non-Toxic:{cc['non_toxic']}")
-            
-            # Print quality classifier stats for this file
-            if enable_quality_classifier:
-                qc = file_stats["quality_classifier"]
-                print(f"  Quality (DeBERTa): High:{qc['High']}, Medium:{qc['Medium']}, Low:{qc['Low']}")
-            
-            # Print top languages for this file
-            if enable_langid and file_stats["languages"]:
-                top_langs = sorted(file_stats["languages"].items(), key=lambda x: x[1], reverse=True)[:3]
-                lang_str = ", ".join([f"{get_language_name(l)}:{c}" for l, c in top_langs])
-                print(f"  Top languages: {lang_str}")
-            
-        except Exception as e:
-            print(f"  ERROR processing {filename}: {e}")
-            continue
+            dedup_elapsed = time.time() - dedup_start
+            print(f"  Deduplication time: {dedup_elapsed:.2f}s")
+            print_memory_status("  [AFTER DEDUP] ")
     
     end_time = time.time()
     elapsed = end_time - start_time
@@ -652,6 +1293,47 @@ def run_pipeline(
     if elapsed > 0:
         print(f"Processing rate:          {total_stats['total_rows'] / elapsed:.2f} rows/sec")
     print()
+
+    # Print aggregate timing profile
+    if "timings" in total_stats and total_stats["timings"]:
+        t = total_stats["timings"]
+        cpu_total = t.get("total_file", 0.0)
+        print("-" * 60)
+        print("⏱  AGGREGATE TIMING PROFILE (sum of CPU-seconds across all workers)")
+        print("-" * 60)
+        print(f"  Wall-clock time:       {elapsed:>10.2f}s")
+        print(f"  Total CPU-seconds:     {cpu_total:>10.2f}s  (across {total_stats['files_processed']} files)")
+        if num_workers > 1 and elapsed > 0:
+            speedup = cpu_total / elapsed
+            print(f"  Effective speedup:     {speedup:>10.2f}x  (ideal={num_workers}x)")
+        print()
+        print(f"  {'Step':<28} {'CPU-sec':>10} {'% of CPU':>10} {'Avg/file':>10}")
+        print(f"  {'-'*60}")
+        nfiles = max(total_stats['files_processed'], 1)
+        for step_name, key in [
+            ("I/O Read (parquet decode)", "io_read"),
+            ("HTML Detection",           "html_detection"),
+            ("HTML Extraction",          "html_extraction"),
+            ("PII Masking",              "pii_masking"),
+            ("Language ID (FastText)",   "langid"),
+            ("Gopher Quality Filter",   "quality_filter"),
+            ("Fasttext Quality Clf",    "quality_classifier"),
+            ("Content Classification",  "content_classification"),
+            ("I/O Write (parquet enc)",  "io_write"),
+        ]:
+            secs = t.get(key, 0.0)
+            pct = (secs / cpu_total) * 100 if cpu_total > 0 else 0
+            avg = secs / nfiles
+            bar = "█" * int(pct / 2)
+            print(f"  {step_name:<28} {secs:>10.2f} {pct:>9.1f}% {avg:>10.2f}  {bar}")
+        accounted = sum(t.get(k, 0.0) for k in [
+            "io_read", "html_detection", "html_extraction", "pii_masking",
+            "langid", "quality_filter", "quality_classifier",
+            "content_classification", "io_write"])
+        overhead = cpu_total - accounted
+        pct_oh = (overhead / cpu_total) * 100 if cpu_total > 0 else 0
+        print(f"  {'Overhead / other':<28} {overhead:>10.2f} {pct_oh:>9.1f}%")
+        print()
     
     # Print PII masking summary
     if enable_pii_masking:
@@ -728,17 +1410,16 @@ def run_pipeline(
         print(f"Non-Toxic content:        {cc['non_toxic']:,} ({cc['non_toxic']/total_classified*100:.2f}%)" if total_classified > 0 else f"Non-Toxic content:        {cc['non_toxic']:,}")
         print()
     
-    # Print quality classifier summary (DeBERTa)
+    # Print quality classifier summary (Fasttext)
     if enable_quality_classifier:
         print("-" * 60)
-        print("QUALITY CLASSIFIER SUMMARY (NVIDIA DeBERTa)")
+        print("QUALITY CLASSIFIER SUMMARY (Fasttext)")
         print("-" * 60)
         qc = total_stats["quality_classifier"]
-        total_qc = qc["High"] + qc["Medium"] + qc["Low"]
-        print(f"High quality:             {qc['High']:,} ({qc['High']/total_qc*100:.2f}%)" if total_qc > 0 else f"High quality:             {qc['High']:,}")
-        print(f"Medium quality:           {qc['Medium']:,} ({qc['Medium']/total_qc*100:.2f}%)" if total_qc > 0 else f"Medium quality:           {qc['Medium']:,}")
-        print(f"Low quality (filtered):   {qc['Low']:,} ({qc['Low']/total_qc*100:.2f}%)" if total_qc > 0 else f"Low quality (filtered):   {qc['Low']:,}")
-        print(f"Kept (High+Medium):       {qc['High']+qc['Medium']:,}")
+        total_qc = qc["positive"] + qc["negative"]
+        print(f"Positive (high) quality:  {qc['positive']:,} ({qc['positive']/total_qc*100:.2f}%)" if total_qc > 0 else f"Positive (high) quality:  {qc['positive']:,}")
+        print(f"Negative (low) quality:   {qc['negative']:,} ({qc['negative']/total_qc*100:.2f}%)" if total_qc > 0 else f"Negative (low) quality:   {qc['negative']:,}")
+        print(f"Kept (positive only):     {qc['positive']:,}")
         print()
     
     # Print filtering summary
@@ -754,7 +1435,7 @@ def run_pipeline(
     print("Filtered out due to:")
     print(f"  - Non-English language: {flt['non_english']:,}")
     print(f"  - Gopher quality:       {total_stats['quality_filter']['failed']:,}")
-    print(f"  - DeBERTa low quality:  {flt.get('low_quality_deberta', 0):,}")
+    print(f"  - Fasttext low quality:  {flt.get('low_quality_Fasttext', 0):,}")
     print(f"  - NSFW content:         {flt['nsfw']:,}")
     print(f"  - Toxic content:        {flt['toxic']:,}")
     print()
@@ -773,6 +1454,36 @@ def run_pipeline(
         for reason, count in sorted(qf["failed_reasons"].items(), key=lambda x: x[1], reverse=True):
             if count > 0:
                 print(f"  - {reason}: {count:,}")
+        print()
+    
+    # Print deduplication summary
+    if enable_deduplication:
+        print("-" * 60)
+        print("DEDUPLICATION SUMMARY (MinHash + LSH)")
+        print("-" * 60)
+        dd = total_stats["deduplication"]
+        print(f"Documents before dedup:   {dd['total_docs_before']:,}")
+        print(f"Documents after dedup:    {dd['total_docs_after']:,}")
+        print(f"Duplicates removed:       {dd['duplicates_removed']:,}")
+        if dd['total_docs_before'] > 0:
+            pct = dd['duplicates_removed'] / dd['total_docs_before'] * 100
+            print(f"Dedup removal rate:       {pct:.2f}%")
+        print(f"Candidate pairs found:    {dd['candidate_pairs']:,}")
+        print(f"Verified duplicate pairs: {dd['verified_pairs']:,}")
+        print(f"Output files rewritten:   {dd['files_rewritten']:,}")
+        print()
+
+    # Print Hugging Face upload summary
+    if push_to_hf:
+        print("-" * 60)
+        print("HUGGING FACE UPLOAD SUMMARY")
+        print("-" * 60)
+        hf_stats = total_stats["huggingface"]
+        uploaded_gb = hf_stats["uploaded_bytes"] / (1024 ** 3)
+        print(f"Files uploaded:           {hf_stats['uploaded_files']:,}")
+        print(f"Upload failures:          {hf_stats['upload_failed']:,}")
+        print(f"Total uploaded size:      {uploaded_gb:.2f} GB")
+        print(f"Local files deleted:      {hf_stats['deleted_local_files']:,}")
         print()
     
     print("=" * 60)
@@ -807,7 +1518,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--start-index", "-s",
         type=int,
-        default=0,
+        default=5,
         help="Index of the first file to process (0-based, default: 0)"
     )
     parser.add_argument(
@@ -851,13 +1562,61 @@ if __name__ == "__main__":
     parser.add_argument(
         "--no-quality-classifier",
         action="store_true",
-        help="Disable NVIDIA DeBERTa quality classifier"
+        help="Disable NVIDIA Fasttext quality classifier"
     )
+    parser.add_argument(
+        "--no-dedup",
+        action="store_true",
+        help="Disable MinHash+LSH fuzzy deduplication"
+    )
+    parser.add_argument(
+        "--workers", "-w",
+        type=int,
+        default=1,
+        help="Number of parallel worker processes for file-level parallelism (default: 1 = sequential)"
+    )
+    # Dedup parameters are read from cs336_data.config.py (DEDUP_*)
     parser.add_argument(
         "--max-rows", "-r",
         type=int,
         default=-1,
         help="Maximum rows to process per file (default: 1000 for debugging, use -1 for all)"
+    )
+    parser.add_argument(
+        "--input-format",
+        type=str,
+        choices=["parquet", "jsonl"],
+        default="parquet",
+        help="Input file format: 'parquet' or 'jsonl' (supports .jsonl, .jsonl.gz, .jsonl.zst)"
+    )
+    parser.add_argument(
+        "--output-format",
+        type=str,
+        choices=["parquet", "jsonl"],
+        default="parquet",
+        help="Output file format: 'parquet' or 'jsonl' (compressed with zstd)"
+    )
+    parser.add_argument(
+        "--push-to-hf",
+        action="store_true",
+        help="Upload each processed file to a Hugging Face dataset repository"
+    )
+    parser.add_argument(
+        "--hf-repo-id",
+        type=str,
+        default=None,
+        help="HF dataset repo id (username/repo). Defaults to config.HUGGINGFACE_DATASET_REPO"
+    )
+    parser.add_argument(
+        "--hf-path-prefix",
+        type=str,
+        default="",
+        help="Optional folder prefix inside HF dataset repo (e.g. 'processed/train')"
+    )
+    parser.add_argument(
+        "--keep-local-after-hf-upload",
+        action="store_true",
+        help="Keep local output files after successful HF upload"
     )
     
     args = parser.parse_args()
@@ -865,8 +1624,14 @@ if __name__ == "__main__":
     # Handle max_rows: -1 means all rows
     max_rows = None if args.max_rows == -1 else args.max_rows
     
+    # If using jsonl input, switch to JSON glob if available and not explicitly set
+    input_glob = args.input_glob
+    if args.input_format == "jsonl" and args.input_glob == INPUT_GLOB and INPUT_GLOB_JSON:
+        input_glob = INPUT_GLOB_JSON
+        print(f"Using JSONL input glob from config: {input_glob}")
+    
     run_pipeline(
-        input_glob=args.input_glob,
+        input_glob=input_glob,
         output_dir=args.output_dir,
         text_column=args.text_column,
         batch_size=args.batch_size,
@@ -878,5 +1643,13 @@ if __name__ == "__main__":
         enable_content_classification=not args.no_content_classification,
         enable_quality_filter=not args.no_quality_filter,
         enable_quality_classifier=not args.no_quality_classifier,
+        enable_deduplication=not args.no_dedup,
         max_rows=max_rows,
+        input_format=args.input_format,
+        output_format=args.output_format,
+        push_to_hf=args.push_to_hf,
+        hf_repo_id=args.hf_repo_id,
+        hf_path_prefix=args.hf_path_prefix,
+        delete_local_after_hf_upload=not args.keep_local_after_hf_upload,
+        num_workers=args.workers,
     )

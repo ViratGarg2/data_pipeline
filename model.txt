@@ -1,3 +1,5 @@
 nsfw model download link -> https://huggingface.co/allenai/dolma-jigsaw-fasttext-bigrams-nsfw/tree/main
 hatespeech model download -> https://huggingface.co/allenai/dolma-jigsaw-fasttext-bigrams-hatespeech
 model for language classification -> https://dl.fbaipublicfiles.com/fasttext/supervised-models/lid.176.bin
+wandb link -> https://wandb.ai/gargvirat5-iiit-hyderabad/cs336-data/runs/s1ml9n3n?nw=nwusergargvirat5
+link to hf with final model,training tokenised data and evaluation tokenised data -> https://huggingface.co/ViratGarg/gpt-model/tree/main

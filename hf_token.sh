@@ -8,6 +8,7 @@ set -euo pipefail
 #SBATCH --cpus-per-task=1
 #SBATCH --time=24:00:00
 #SBATCH --output=slurm-%j.out
+#SBATCH --nodelist=gnode047
 
 echo "SLURM_JOB_ID=${SLURM_JOB_ID:-UNSET}"
 echo "SLURM_NODELIST=${SLURM_NODELIST:-UNSET}"
@@ -28,13 +29,9 @@ export NUMEXPR_NUM_THREADS=1
 
 source /home2/mehulag022/venv2/bin/activate || true
 
-python -u process_html_pipeline.py \
-  --max-files 30 \
-  --no-dedup \
-  --batch-size 64 \
-  --push-to-hf \
-  --start-index 150 \
-  --hf-repo-id ViratGarg/pile_data \
-  --hf-path-prefix processed \
-  --no-content-classification \
-  --workers 4
+python hf_tokenisation.py \
+    --repo allenai/paloma \
+    --config c4_100_domains \
+    --split val \
+    --output /ssd_scratch/virat/paloma_c4_100_val.bin
+  # --start-file 59 \
