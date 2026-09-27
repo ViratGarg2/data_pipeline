@@ -3,3 +3,4 @@ hatespeech model download -> https://huggingface.co/allenai/dolma-jigsaw-fasttex
 model for language classification -> https://dl.fbaipublicfiles.com/fasttext/supervised-models/lid.176.bin
 wandb link -> https://wandb.ai/gargvirat5-iiit-hyderabad/cs336-data/runs/s1ml9n3n?nw=nwusergargvirat5
 link to hf with final model,training tokenised data and evaluation tokenised data -> https://huggingface.co/ViratGarg/gpt-model/tree/main
+model trined by me for nsfw,hatespeech and language identification -> 

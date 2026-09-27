@@ -1,0 +1,20 @@
+{
+  "shards_expected": 270,
+  "shards_complete": 270,
+  "filtered_tokens": 13589978522,
+  "unfiltered_tokens": 13589978522,
+  "assignment_tokens": 13107200000,
+  "pct_of_assignment_budget": 103.68330781555176,
+  "filtered_docs": 11023784,
+  "unfiltered_docs": 8374559,
+  "unfiltered_mean_pct_of_raw_docs_sampled": 38.10194114020662,
+  "filter_configs": {
+    "with content classification": 19,
+    "langid + PII + Gopher + fastText quality": 251
+  },
+  "bytes_on_hf": {
+    "filtered": 52972738795,
+    "unfiltered": 46645545424
+  },
+  "problems": []
+}

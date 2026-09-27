@@ -165,7 +165,7 @@ def exact_line_deduplication(
         output_path = output_directory / filepath.name
         
         with xopen(filepath) as f_in:
-            with xopen(output_path) as f_out:
+            with xopen(output_path, "w") as f_out:
                 for line in f_in:
                     line_stripped = line.rstrip('\n\r')
                     line_hash = hash_line(line_stripped)

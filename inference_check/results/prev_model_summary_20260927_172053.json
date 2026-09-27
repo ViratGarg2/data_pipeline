@@ -1,0 +1,17 @@
+{
+  "model": "ViratGarg/gpt-model",
+  "node": "jarvis",
+  "device": "cpu",
+  "gpu": null,
+  "paloma_c4_val_loss": 3.7969686329364776,
+  "perplexity": 44.56588397130887,
+  "eval_tokens": 163840,
+  "sampling": {
+    "temperature": 0.7,
+    "top_k": 50,
+    "max_new_tokens": 80,
+    "samples_per_prompt": 3,
+    "seed": 1234
+  },
+  "samples_csv": "/home/mehul/a4_train/inference_check/results/prev_model_samples_20260927_172053.csv"
+}

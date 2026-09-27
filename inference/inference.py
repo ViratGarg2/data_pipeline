@@ -118,8 +118,14 @@ def generate(
     temperature: float = 0.7,
     top_k: int = 50,
     device: str = "cuda",
+    stop_strings: list[str] | None = None,
 ) -> str:
-    """Generate text from a prompt with a tqdm progress bar."""
+    """Generate text from a prompt with a tqdm progress bar.
+    
+    Args:
+        stop_strings: List of strings that trigger early stop when generated
+                      text ends with any of them (e.g. ["\\n\\n"]).
+    """
     import torch.nn.functional as F
 
     prompt_ids = tokenizer.encode(prompt)
@@ -128,6 +134,7 @@ def generate(
     context_length = model.context_length
 
     generated_tokens = 0
+    stop_reason = "max_tokens"
     t0 = time.time()
 
     with torch.no_grad():
@@ -151,21 +158,51 @@ def generate(
             probs = F.softmax(next_logits, dim=-1)
             next_id = torch.multinomial(probs, 1)
 
+            # Stop on EOS token
             if eos_token_id is not None and next_id.item() == eos_token_id:
-                pbar.update(1)
                 generated_tokens += 1
+                pbar.update(1)
+                stop_reason = "eos_token"
                 break
 
             x = torch.cat((x, next_id), dim=-1)
             generated_tokens += 1
             pbar.update(1)
 
+            # Stop on custom stop strings (check decoded tail)
+            if stop_strings:
+                # Decode only the last few generated tokens (efficient)
+                tail = tokenizer.decode(x[0, len(prompt_ids):].tolist())
+                for ss in stop_strings:
+                    if ss in tail:
+                        stop_reason = f"stop_string '{repr(ss)}'"
+                        break
+                else:
+                    continue
+                break  # outer break
+
         elapsed = time.time() - t0
         pbar.close()
-        tqdm.write(f"  ⏱ Generated {generated_tokens} tokens in {elapsed:.2f}s ({generated_tokens / elapsed:.1f} tok/s)")
+        tqdm.write(
+            f"  ⏱ {generated_tokens} tokens in {elapsed:.2f}s "
+            f"({generated_tokens / elapsed:.1f} tok/s) — stopped: {stop_reason}"
+        )
 
     new_tokens = x[0, len(prompt_ids):].tolist()
-    return tokenizer.decode(prompt_ids + new_tokens)
+    full_text = tokenizer.decode(prompt_ids + new_tokens)
+
+    # Trim text at the stop string if we stopped for one
+    if stop_strings and stop_reason.startswith("stop_string"):
+        for ss in stop_strings:
+            # Find the stop string *after* the prompt portion
+            prompt_text = tokenizer.decode(prompt_ids)
+            gen_text = full_text[len(prompt_text):]
+            idx = gen_text.find(ss)
+            if idx != -1:
+                full_text = prompt_text + gen_text[: idx]
+                break
+
+    return full_text
 
 
 def parse_args():
@@ -175,7 +212,7 @@ def parse_args():
         help="Text prompt to start generation from",
     )
     parser.add_argument(
-        "--max-new-tokens", type=int, default=512,
+        "--max-new-tokens", type=int, default=256,
         help="Maximum number of tokens to generate (default: 256)",
     )
     parser.add_argument(
@@ -202,6 +239,10 @@ def parse_args():
         "--interactive", action="store_true",
         help="Run in interactive mode — keep prompting for input",
     )
+    parser.add_argument(
+        "--no-stop-sequences", action="store_true",
+        help="Disable automatic stop on double-newline (generate until max tokens or EOS)",
+    )
     return parser.parse_args()
 
 
@@ -216,6 +257,9 @@ def main():
     print(f"  Temperature:    {args.temperature}")
     print(f"  Top-k:          {args.top_k}")
     print(f"  Max new tokens: {args.max_new_tokens}")
+    # Build stop sequences — by default stop on double-newline to avoid rambling
+    stop_strings = None if args.no_stop_sequences else ["\n\n"]
+    print(f"  Stop sequences: {stop_strings or 'disabled (run until max tokens/EOS)'}")
     print("=" * 80)
     print()
 
@@ -250,6 +294,7 @@ def main():
                     temperature=args.temperature,
                     top_k=args.top_k,
                     device=device,
+                    stop_strings=stop_strings,
                 )
                 print(f"\n🤖 Generated:\n{output}")
                 print("-" * 80)
@@ -270,6 +315,7 @@ def main():
                 temperature=args.temperature,
                 top_k=args.top_k,
                 device=device,
+                stop_strings=stop_strings,
             )
             print(f"  Generated:\n{output}")
             print()

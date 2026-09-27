@@ -3,48 +3,28 @@
 The implementation has been moved to ``cs336_data.lsh`` for modularity.
 This module re-exports the same public API so existing imports continue to work.
 """
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-try:
-    from cs336_data.lsh import (
-        MAX_HASH,
-        MERSENNE_PRIME,
-        UnionFind,
-        _generate_hash_params,
-        _iter_text_rows_from_tabular_files,
-        compute_minhash_signature,
-        deduplicate_large_dataset,
-        jaccard_similarity,
-        lsh_buckets,
-        minhash_lsh_deduplication,
-        minhash_lsh_deduplication_on_texts,
-        minhash_lsh_deduplication_streaming,
-        minhash_lsh_deduplication_tabular_files,
-        normalize_text,
-        shingle_to_int,
-        word_ngrams,
-    )
-except ModuleNotFoundError as exc:
-    if exc.name != "cs336_data":
-        raise
-    # Supports running scripts directly from within the cs336_data directory.
-    from lsh import (
-        MAX_HASH,
-        MERSENNE_PRIME,
-        UnionFind,
-        _generate_hash_params,
-        _iter_text_rows_from_tabular_files,
-        compute_minhash_signature,
-        deduplicate_large_dataset,
-        jaccard_similarity,
-        lsh_buckets,
-        minhash_lsh_deduplication,
-        minhash_lsh_deduplication_on_texts,
-        minhash_lsh_deduplication_streaming,
-        minhash_lsh_deduplication_tabular_files,
-        normalize_text,
-        shingle_to_int,
-        word_ngrams,
-    )
+from cs336_data.lsh import (
+    MAX_HASH,
+    MERSENNE_PRIME,
+    UnionFind,
+    _generate_hash_params,
+    _iter_text_rows_from_tabular_files,
+    compute_minhash_signature,
+    deduplicate_large_dataset,
+    jaccard_similarity,
+    lsh_buckets,
+    minhash_lsh_deduplication,
+    minhash_lsh_deduplication_on_texts,
+    minhash_lsh_deduplication_streaming,
+    minhash_lsh_deduplication_tabular_files,
+    normalize_text,
+    shingle_to_int,
+    word_ngrams,
+)
 
 __all__ = [
     "MERSENNE_PRIME",

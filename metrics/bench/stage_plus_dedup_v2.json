@@ -1,0 +1,289 @@
+{
+  "run": {
+    "input_glob": "/data3/dataset/the_pile_deduplicated/data/train-*-of-01650-*.parquet",
+    "start_index": 300,
+    "max_files": 8,
+    "max_rows": 20000,
+    "batch_size": 64,
+    "num_workers": 8,
+    "enabled": {
+      "langid": true,
+      "pii": true,
+      "content_classification": false,
+      "quality_filter": true,
+      "quality_classifier": true,
+      "deduplication": true
+    },
+    "dedup_params": {
+      "num_hashes": 256,
+      "num_bands": 32,
+      "ngrams": 5,
+      "jaccard_threshold": 0.5
+    },
+    "push_to_hf": false,
+    "hostname": "gnode054",
+    "slurm_job_id": "2718103",
+    "started_at": "2026-09-27T02:14:53",
+    "finished_at": "2026-09-27T02:22:04"
+  },
+  "totals": {
+    "files_processed": 8,
+    "files_failed": 0,
+    "rows_in": 160000,
+    "docs_kept_after_filters": 72247,
+    "docs_kept_final": 71757,
+    "docs_removed": 88243,
+    "kept_pct": 44.848125,
+    "input_bytes": 2153425042,
+    "output_bytes": 157834122,
+    "chars_in": 945625592,
+    "chars_out": 363806658
+  },
+  "time": {
+    "wall_seconds": 431.03726720809937,
+    "filtering_wall_seconds": 143.56383395195007,
+    "dedup_seconds": 287.47207856178284,
+    "worker_seconds": 1115.1007417170476,
+    "parallel_speedup": 7.767281710310585
+  },
+  "throughput": {
+    "rows_per_second_wall": 371.1976020921505,
+    "rows_per_second_filtering": 1114.4868146496492,
+    "rows_per_second_per_worker": 143.48479380762475,
+    "mb_per_second_filtering": 14.999773847783544
+  },
+  "stages": {
+    "html_detection": {
+      "cpu_seconds": 5.378372601189767,
+      "docs_in": 160000,
+      "latency": {
+        "count": 160000,
+        "mean_ms": 0.03361482875579895,
+        "p50_ms": 0.026490008167456836,
+        "p95_ms": 0.053347001085057855,
+        "p99_ms": 0.15359646931756332,
+        "max_ms": 15.344319865107536
+      },
+      "pct_of_worker_time": 0.48232167731393255
+    },
+    "html_extraction": {
+      "cpu_seconds": 1.8864166328858119,
+      "docs_in": 5810,
+      "latency": {
+        "count": 5810,
+        "mean_ms": 0.32468444630487625,
+        "p50_ms": 0.21449050109367818,
+        "p95_ms": 0.8434925053734332,
+        "p99_ms": 2.152848516125229,
+        "max_ms": 19.71948705613613
+      },
+      "pct_of_worker_time": 0.16917006350305905
+    },
+    "pii_masking": {
+      "cpu_seconds": 516.2974390441377,
+      "docs_in": 159511,
+      "latency": {
+        "count": 159511,
+        "mean_ms": 3.236751317240976,
+        "p50_ms": 0.9980780305340886,
+        "p95_ms": 11.098348535597324,
+        "p99_ms": 33.13508704304685,
+        "max_ms": 2378.4234523773193
+      },
+      "pct_of_worker_time": 46.300519740408006
+    },
+    "langid": {
+      "cpu_seconds": 86.58900959226594,
+      "docs_in": 159511,
+      "latency": {
+        "count": 159511,
+        "mean_ms": 0.5428403658233477,
+        "p50_ms": 0.3411009965930134,
+        "p95_ms": 1.61102251149714,
+        "p99_ms": 1.8746267771348355,
+        "max_ms": 193.87462735176086
+      },
+      "docs_removed": 16433,
+      "removed_pct_of_stage_input": 10.302110826212612,
+      "pct_of_worker_time": 7.7651288670954495
+    },
+    "quality_filter": {
+      "cpu_seconds": 288.86262819245167,
+      "docs_in": 143078,
+      "latency": {
+        "count": 143078,
+        "mean_ms": 2.0189171516717876,
+        "p50_ms": 0.6241060327738523,
+        "p95_ms": 6.939865415915847,
+        "p99_ms": 20.58041071519256,
+        "max_ms": 984.9965572357178
+      },
+      "docs_removed": 51853,
+      "removed_pct_of_stage_input": 36.24107130376438,
+      "pct_of_worker_time": 25.90462165307656
+    },
+    "quality_classifier": {
+      "cpu_seconds": 181.8267342728068,
+      "docs_in": 91225,
+      "latency": {
+        "count": 91225,
+        "mean_ms": 1.9931678281843415,
+        "p50_ms": 0.762099982239306,
+        "p95_ms": 4.524876177310946,
+        "p99_ms": 12.034468799829423,
+        "max_ms": 5028.0280113220215
+      },
+      "docs_removed": 19467,
+      "removed_pct_of_stage_input": 21.33954508084407,
+      "pct_of_worker_time": 16.30585717240466
+    },
+    "content_classification": {
+      "cpu_seconds": 0.0,
+      "docs_in": 0,
+      "latency": null,
+      "docs_removed": 0,
+      "removed_pct_of_stage_input": 0.0,
+      "pct_of_worker_time": 0.0
+    },
+    "document": {
+      "cpu_seconds": 1115.1007417170476,
+      "docs_in": 0,
+      "latency": {
+        "count": 160000,
+        "mean_ms": 6.775893019836895,
+        "p50_ms": 2.3579869884997606,
+        "p95_ms": 21.922760643064965,
+        "p99_ms": 58.59930768609066,
+        "max_ms": 5215.994834899902
+      }
+    },
+    "io_read": {
+      "cpu_seconds": 1.6288333261472872
+    },
+    "io_write": {
+      "cpu_seconds": 16.097414134070277
+    }
+  },
+  "removal_breakdown": {
+    "by_stage": {
+      "empty_text": 0,
+      "langid": 16433,
+      "quality_filter": 51853,
+      "quality_classifier": 19467,
+      "content_classification": 0,
+      "deduplication": 490
+    },
+    "pct_of_removed": {
+      "empty_text": 0.0,
+      "langid": 18.622440306879867,
+      "quality_filter": 58.761601486803485,
+      "quality_classifier": 22.060673367859206,
+      "content_classification": 0.0,
+      "deduplication": 0.5552848384574414
+    },
+    "gopher_failed_checks": {
+      "word_count": 7318,
+      "mean_word_length": 335,
+      "hash_ratio": 337,
+      "ellipsis_ratio": 85,
+      "bullet_line_ratio": 134,
+      "ellipsis_line_ratio": 2373,
+      "alphabetic_word_ratio": 46240,
+      "stop_word_count": 2280,
+      "empty_or_invalid": 0
+    },
+    "nsfw": 0,
+    "toxic": 0
+  },
+  "pii_masked": {
+    "emails": 10778,
+    "phones": 11227,
+    "ips": 5062,
+    "total": 27067
+  },
+  "html_types": {
+    "plain_text": 154190,
+    "xml": 622,
+    "partial_html": 3150,
+    "generic_tags": 1320,
+    "full_html": 718
+  },
+  "deduplication": {
+    "total_docs_before": 72247,
+    "total_docs_after": 71757,
+    "duplicates_removed": 490,
+    "candidate_pairs": 3818117,
+    "verified_pairs": 490,
+    "files_rewritten": 8,
+    "seconds": 287.47207856178284
+  },
+  "memory": {
+    "main_process_gb": 0.3225898742675781,
+    "largest_worker_gb": 2.9219284057617188
+  },
+  "per_file": [
+    {
+      "file": "train-00300-of-01650-6f96b25ec2211d22.parquet",
+      "rows": 20000,
+      "kept": 8966,
+      "seconds": 134.6572749090119,
+      "rows_per_second": 148.5252097483335
+    },
+    {
+      "file": "train-00303-of-01650-17d25eb70547acfd.parquet",
+      "rows": 20000,
+      "kept": 9099,
+      "seconds": 137.03050492300827,
+      "rows_per_second": 145.95290305058109
+    },
+    {
+      "file": "train-00302-of-01650-04425a79df88f347.parquet",
+      "rows": 20000,
+      "kept": 8985,
+      "seconds": 137.6349593999912,
+      "rows_per_second": 145.31191847760502
+    },
+    {
+      "file": "train-00306-of-01650-2f2082f6c5ca0736.parquet",
+      "rows": 20000,
+      "kept": 8996,
+      "seconds": 139.9915042920038,
+      "rows_per_second": 142.86581247303863
+    },
+    {
+      "file": "train-00305-of-01650-0b4309f71c1684e7.parquet",
+      "rows": 20000,
+      "kept": 9042,
+      "seconds": 140.65401343401754,
+      "rows_per_second": 142.19288530563145
+    },
+    {
+      "file": "train-00301-of-01650-14e9182dbcf81bad.parquet",
+      "rows": 20000,
+      "kept": 9073,
+      "seconds": 141.0213200119906,
+      "rows_per_second": 141.82252724835834
+    },
+    {
+      "file": "train-00304-of-01650-f3563f6471f23edc.parquet",
+      "rows": 20000,
+      "kept": 9106,
+      "seconds": 141.4061176210089,
+      "rows_per_second": 141.4365964957981
+    },
+    {
+      "file": "train-00307-of-01650-cf8c4ded202a037d.parquet",
+      "rows": 20000,
+      "kept": 8980,
+      "seconds": 142.70504712601542,
+      "rows_per_second": 140.1492126787852
+    }
+  ],
+  "failed_files": [],
+  "huggingface": {
+    "uploaded_files": 0,
+    "upload_failed": 0,
+    "uploaded_bytes": 0,
+    "deleted_local_files": 0
+  }
+}

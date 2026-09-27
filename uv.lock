@@ -1,5 +1,5 @@
 version = 1
-revision = 2
+revision = 3
 requires-python = ">=3.11"
 resolution-markers = [
     "python_full_version >= '3.12' and sys_platform == 'linux'",
@@ -216,6 +216,7 @@ dependencies = [
     { name = "cs336-basics" },
     { name = "fasttext" },
     { name = "fastwarc" },
+    { name = "huggingface-hub" },
     { name = "mmh3" },
     { name = "nltk" },
     { name = "numpy" },
@@ -234,6 +235,7 @@ requires-dist = [
     { name = "cs336-basics", editable = "cs336-basics" },
     { name = "fasttext", specifier = ">=0.9.3" },
     { name = "fastwarc", specifier = ">=0.15.2" },
+    { name = "huggingface-hub", specifier = ">=0.29.0" },
     { name = "mmh3", specifier = ">=5.1.0" },
     { name = "nltk", specifier = ">=3.9.1" },
     { name = "numpy", specifier = "<2.0" },

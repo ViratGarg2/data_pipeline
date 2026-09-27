@@ -1,0 +1,55 @@
+Sun Sep 27 00:13:08 2026    /ssd_scratch/mehulag022/a4_bench/profile_2717856/profile.out
+
+         10992192 function calls (10978996 primitive calls) in 19.245 seconds
+
+   Ordered by: cumulative time
+   List reduced from 3289 to 45 due to restriction <45>
+
+   ncalls  tottime  percall  cumtime  percall filename:lineno(function)
+    535/1    0.003    0.000   19.246   19.246 {built-in method builtins.exec}
+        1    0.000    0.000   19.246   19.246 cs336_data/process_html_pipeline.py:1(<module>)
+        1    0.000    0.000   18.921   18.921 cs336_data/process_html_pipeline.py:837(run_pipeline)
+        1    0.000    0.000   18.837   18.837 cs336_data/process_html_pipeline.py:799(_process_file_worker)
+        1    1.459    1.459   18.837   18.837 cs336_data/process_html_pipeline.py:221(process_single_file)
+     3000    0.012    0.000   16.301    0.005 cs336_data/process_html_pipeline.py:476(_process_text_timed)
+     3000    0.050    0.000   16.287    0.005 cs336_data/process_html_pipeline.py:346(_process_text)
+     2684    0.057    0.000    5.267    0.002 /home2/mehulag022/assignment4-data/cs336_data/quality_filter.py:115(gopher_quality_filter)
+     2684    2.473    0.001    5.192    0.002 /home2/mehulag022/assignment4-data/cs336_data/quality_filter.py:35(_compute_all_metrics)
+     2991    0.010    0.000    5.067    0.002 /home2/mehulag022/assignment4-data/cs336_data/pii_masking.py:132(mask_all_pii)
+     1659    0.026    0.000    4.543    0.003 /home2/mehulag022/assignment4-data/cs336_data/quality_classifier_fasttext.py:160(get_all_predictions)
+    13228    3.737    0.000    3.737    0.000 {method 'findall' of 're.Pattern' objects}
+        2    0.000    0.000    2.829    1.415 /home2/mehulag022/venv/lib/python3.10/site-packages/fasttext/FastText.py:443(load_model)
+        2    2.829    1.415    2.829    1.415 /home2/mehulag022/venv/lib/python3.10/site-packages/fasttext/FastText.py:90(__init__)
+     4650    2.704    0.001    2.732    0.001 /home2/mehulag022/venv/lib/python3.10/site-packages/fasttext/FastText.py:195(predict)
+     1659    0.001    0.000    2.678    0.002 /home2/mehulag022/assignment4-data/cs336_data/quality_classifier_fasttext.py:37(_load_model)
+    12122    2.516    0.000    2.516    0.000 {method 'sub' of 're.Pattern' objects}
+     2991    0.008    0.000    2.441    0.001 /home2/mehulag022/assignment4-data/cs336_data/pii_masking.py:51(mask_phone_numbers)
+     2991    0.007    0.000    1.360    0.000 /home2/mehulag022/assignment4-data/cs336_data/pii_masking.py:99(mask_ip_addresses)
+     2991    0.007    0.000    1.255    0.000 /home2/mehulag022/assignment4-data/cs336_data/pii_masking.py:18(mask_emails)
+     2991    0.020    0.000    1.213    0.000 /home2/mehulag022/assignment4-data/cs336_data/langid.py:52(identify_language)
+   649/22    0.004    0.000    1.151    0.052 <frozen importlib._bootstrap>:1022(_find_and_load)
+   649/22    0.003    0.000    1.151    0.052 <frozen importlib._bootstrap>:987(_find_and_load_unlocked)
+   627/23    0.004    0.000    1.135    0.049 <frozen importlib._bootstrap>:664(_load_unlocked)
+   517/21    0.002    0.000    1.134    0.054 <frozen importlib._bootstrap_external>:877(exec_module)
+   875/25    0.001    0.000    1.120    0.045 <frozen importlib._bootstrap>:233(_call_with_frames_removed)
+  3762300    0.920    0.000    0.920    0.000 {method 'search' of 're.Pattern' objects}
+       48    0.001    0.000    0.900    0.019 cs336_data/process_html_pipeline.py:574(_flush_output)
+       16    0.016    0.001    0.846    0.053 cs336_data/process_html_pipeline.py:524(_to_arrow_arrays)
+        1    0.000    0.000    0.823    0.823 /home2/mehulag022/venv/lib/python3.10/site-packages/pandas/__init__.py:1(<module>)
+        1    0.000    0.000    0.556    0.556 /home2/mehulag022/venv/lib/python3.10/site-packages/pandas/core/api.py:1(<module>)
+   463/63    0.001    0.000    0.492    0.008 {built-in method builtins.__import__}
+  844/437    0.002    0.000    0.387    0.001 <frozen importlib._bootstrap>:1053(_handle_fromlist)
+      517    0.006    0.000    0.373    0.001 <frozen importlib._bootstrap_external>:950(get_code)
+      642    0.006    0.000    0.299    0.000 <frozen importlib._bootstrap>:921(_find_spec)
+      618    0.001    0.000    0.286    0.000 <frozen importlib._bootstrap_external>:1431(find_spec)
+      618    0.003    0.000    0.286    0.000 <frozen importlib._bootstrap_external>:1399(_get_spec)
+      900    0.009    0.000    0.278    0.000 <frozen importlib._bootstrap_external>:1536(find_spec)
+      517    0.002    0.000    0.276    0.001 <frozen importlib._bootstrap_external>:1070(get_data)
+     2474    0.254    0.000    0.254    0.000 {built-in method posix.stat}
+  2751559    0.250    0.000    0.250    0.000 {method 'lower' of 'str' objects}
+     2428    0.002    0.000    0.239    0.000 <frozen importlib._bootstrap_external>:140(_path_stat)
+    85/41    0.000    0.000    0.237    0.006 <frozen importlib._bootstrap_external>:1182(exec_module)
+    85/41    0.033    0.000    0.236    0.006 {built-in method _imp.exec_dynamic}
+        1    0.000    0.000    0.235    0.235 /home2/mehulag022/venv/lib/python3.10/site-packages/pandas/core/arrays/__init__.py:1(<module>)
+
+

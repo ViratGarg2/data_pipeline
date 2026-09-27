@@ -1,0 +1,17 @@
+# @package _global_
+# Token-matched comparison run: identical to the other *_13B config except the training data.
+# Paths come from environment variables set by scripts/launch_matched_run.sh.
+
+paths:
+  train_hf_repo: ViratGarg/pile_filtered_13B   # shards are streamed, not downloaded up front
+  stream_cache_dir: ${oc.env:A4_OUT_DIR}/stream_cache_filtered
+  valid_bin: ${oc.env:A4_DATA_DIR}/paloma_c4_100_val.bin
+  model_output: ${oc.env:A4_OUT_DIR}/filtered_13B
+
+training:
+  # W&B credentials come from ~/.netrc or WANDB_API_KEY, never from this file.
+  wandb_entity: gargvirat5-iiit-hyderabad
+  wandb_project: cs336-data
+  # eval_batch_size defaults to the micro-batch; 128 x 512 x 50k-vocab logits do not fit on a 24 GB GPU.
+  save_checkpoints: true      # step_N/model.pt at every eval (2k steps) ...
+  checkpoint_keep_every: 10000  # ... keeping every 10k plus the latest

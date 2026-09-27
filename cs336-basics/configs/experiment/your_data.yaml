@@ -12,6 +12,6 @@ paths:
 training:
   wandb_entity: gargvirat5-iiit-hyderabad  # Set to your wandb entity, e.g. pliang
   wandb_project: cs336-data
-  api_key: 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
+  # W&B credentials come from `wandb login` (~/.netrc) or WANDB_API_KEY, never from this file.
   dtype: float16  # RTX 2080 does not support bfloat16
   save_checkpoints: True

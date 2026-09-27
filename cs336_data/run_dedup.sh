@@ -26,7 +26,7 @@ export OPENBLAS_NUM_THREADS=1
 export MKL_NUM_THREADS=1
 export NUMEXPR_NUM_THREADS=1
 
-source /home2/mehulag022/venv2/bin/activate || true
+source /home2/mehulag022/venv/bin/activate || true
 
 python -u dedup_jsonl_folder_to_hf.py \
   --max-files 20 \

@@ -1,0 +1,14 @@
+arm=filtered gpus=1 micro_batch=32 grad_accum=8 dtype=bfloat16 out=/home/mehul/a4_train/smoke/filtered_13B
+- Total number of tokens per training step: 131072
+wandb: 🚀 View run at https://wandb.ai/gargvirat5-iiit-hyderabad/cs336-data-smoke/runs/12fd2vz3
+- Streaming 270 shards from ViratGarg/pile_filtered_13B (rank 0/1)
+- Saving model config to /home/mehul/a4_train/smoke/filtered_13B/model_config.json
+- Estimated validation loss: 7.005423545837402
+- Estimated validation loss: 6.561892986297607
+- Final estimated validation loss: 6.536335468292236
+- Saving model weights to /home/mehul/a4_train/smoke/filtered_13B/model.pt
+--- step timing
+Training step 1, Loss: 10.8388:   1%|          | 1/120 [00:07<10:28,  5.28s/it]
+Training step 50, Loss: 6.7051:  42%|████▏     | 50/120 [02:02<02:45,  2.36s/it]
+Training step 100, Loss: 6.1914:  83%|████████▎ | 100/120 [04:16<00:50,  2.52s/it]
+Training step 119, Loss: 6.1933:  99%|█████████▉| 119/120 [05:12<00:02,  2.37s/it]

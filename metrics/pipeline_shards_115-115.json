@@ -1,0 +1,240 @@
+{
+  "run": {
+    "input_glob": "/data3/dataset/the_pile_deduplicated/data/train-*-of-01650-*.parquet",
+    "start_index": 115,
+    "max_files": 1,
+    "max_rows": null,
+    "batch_size": 64,
+    "num_workers": 8,
+    "enabled": {
+      "langid": true,
+      "pii": true,
+      "content_classification": false,
+      "quality_filter": true,
+      "quality_classifier": true,
+      "deduplication": false
+    },
+    "dedup_params": {
+      "num_hashes": 256,
+      "num_bands": 32,
+      "ngrams": 5,
+      "jaccard_threshold": 0.5
+    },
+    "push_to_hf": false,
+    "hostname": "gnode056",
+    "slurm_job_id": "2716536",
+    "started_at": "2026-09-26T04:45:16",
+    "finished_at": "2026-09-26T04:50:04"
+  },
+  "totals": {
+    "files_processed": 1,
+    "files_failed": 0,
+    "rows_in": 81405,
+    "docs_kept_after_filters": 37804,
+    "docs_kept_final": 37804,
+    "docs_removed": 43601,
+    "kept_pct": 46.439407898777716,
+    "input_bytes": 258227244,
+    "output_bytes": 85255188,
+    "chars_in": 462653876,
+    "chars_out": 196621476
+  },
+  "time": {
+    "wall_seconds": 287.7483763694763,
+    "filtering_wall_seconds": 287.748172044754,
+    "dedup_seconds": 0.0,
+    "worker_seconds": 287.7190380959073,
+    "parallel_speedup": 0.99989875192381
+  },
+  "throughput": {
+    "rows_per_second_wall": 282.9034207841155,
+    "rows_per_second_filtering": 282.9036216686684,
+    "rows_per_second_per_worker": 282.9322680164972,
+    "mb_per_second_filtering": 0.8974070700954354
+  },
+  "stages": {
+    "html_detection": {
+      "cpu_seconds": 1.4768114654580131,
+      "docs_in": 81405,
+      "latency": {
+        "count": 81405,
+        "mean_ms": 0.018141532653901404,
+        "p50_ms": 0.014891964383423328,
+        "p95_ms": 0.026217615231871612,
+        "p99_ms": 0.07702688686549712,
+        "max_ms": 2.5340730790048838
+      },
+      "pct_of_worker_time": 0.5132824978254438
+    },
+    "html_extraction": {
+      "cpu_seconds": 0.5055716183269396,
+      "docs_in": 2813,
+      "latency": {
+        "count": 2813,
+        "mean_ms": 0.17972684635357303,
+        "p50_ms": 0.10958896018564701,
+        "p95_ms": 0.4867475945502522,
+        "p99_ms": 1.2006404856219897,
+        "max_ms": 13.80826998502016
+      },
+      "pct_of_worker_time": 0.17571712378602283
+    },
+    "pii_masking": {
+      "cpu_seconds": 110.18746319867205,
+      "docs_in": 81095,
+      "latency": {
+        "count": 81095,
+        "mean_ms": 1.358745461838287,
+        "p50_ms": 0.45846798457205296,
+        "p95_ms": 4.46801390498877,
+        "p99_ms": 13.740927092730987,
+        "max_ms": 432.7125549316406
+      },
+      "pct_of_worker_time": 38.29689683653903
+    },
+    "langid": {
+      "cpu_seconds": 19.32415807642974,
+      "docs_in": 81095,
+      "latency": {
+        "count": 81095,
+        "mean_ms": 0.23829037583082763,
+        "p50_ms": 0.1480319770053029,
+        "p95_ms": 0.6353876553475857,
+        "p99_ms": 0.7648573047481471,
+        "max_ms": 1222.8928804397583
+      },
+      "docs_removed": 9032,
+      "removed_pct_of_stage_input": 11.137554719773105,
+      "pct_of_worker_time": 6.7163293066440355
+    },
+    "quality_filter": {
+      "cpu_seconds": 62.90418248903006,
+      "docs_in": 72063,
+      "latency": {
+        "count": 72063,
+        "mean_ms": 0.8729054086530944,
+        "p50_ms": 0.3007909981533885,
+        "p95_ms": 2.8361900011077483,
+        "p99_ms": 8.516169805079713,
+        "max_ms": 255.12707233428955
+      },
+      "docs_removed": 23986,
+      "removed_pct_of_stage_input": 33.2847647197591,
+      "pct_of_worker_time": 21.863058803936983
+    },
+    "quality_classifier": {
+      "cpu_seconds": 77.17404363199603,
+      "docs_in": 48077,
+      "latency": {
+        "count": 48077,
+        "mean_ms": 1.6052175057768112,
+        "p50_ms": 0.3964930074289441,
+        "p95_ms": 2.320438669994472,
+        "p99_ms": 6.398828402161597,
+        "max_ms": 39114.17770385742
+      },
+      "docs_removed": 10583,
+      "removed_pct_of_stage_input": 22.01260477983235,
+      "pct_of_worker_time": 26.822710149013876
+    },
+    "content_classification": {
+      "cpu_seconds": 0.0,
+      "docs_in": 0,
+      "latency": null,
+      "docs_removed": 0,
+      "removed_pct_of_stage_input": 0.0,
+      "pct_of_worker_time": 0.0
+    },
+    "document": {
+      "cpu_seconds": 287.7190380959073,
+      "docs_in": 0,
+      "latency": {
+        "count": 81405,
+        "mean_ms": 3.3469245663972926,
+        "p50_ms": 1.1154039530083537,
+        "p95_ms": 9.297755546867853,
+        "p99_ms": 24.796020090580143,
+        "max_ms": 39146.77047729492
+      }
+    },
+    "io_read": {
+      "cpu_seconds": 0.46541266702115536
+    },
+    "io_write": {
+      "cpu_seconds": 2.403678479255177
+    }
+  },
+  "removal_breakdown": {
+    "by_stage": {
+      "empty_text": 0,
+      "langid": 9032,
+      "quality_filter": 23986,
+      "quality_classifier": 10583,
+      "content_classification": 0,
+      "deduplication": 0
+    },
+    "pct_of_removed": {
+      "empty_text": 0.0,
+      "langid": 20.71512121281622,
+      "quality_filter": 55.012499713309325,
+      "quality_classifier": 24.272379073874454,
+      "content_classification": 0.0,
+      "deduplication": 0.0
+    },
+    "gopher_failed_checks": {
+      "word_count": 3833,
+      "mean_word_length": 119,
+      "hash_ratio": 191,
+      "ellipsis_ratio": 50,
+      "bullet_line_ratio": 68,
+      "ellipsis_line_ratio": 1565,
+      "alphabetic_word_ratio": 20841,
+      "stop_word_count": 1080,
+      "empty_or_invalid": 0
+    },
+    "nsfw": 0,
+    "toxic": 0
+  },
+  "pii_masked": {
+    "emails": 5795,
+    "phones": 6881,
+    "ips": 2868,
+    "total": 15544
+  },
+  "html_types": {
+    "plain_text": 78592,
+    "partial_html": 1418,
+    "full_html": 356,
+    "generic_tags": 687,
+    "xml": 352
+  },
+  "deduplication": {
+    "total_docs_before": 0,
+    "total_docs_after": 0,
+    "duplicates_removed": 0,
+    "candidate_pairs": 0,
+    "verified_pairs": 0,
+    "files_rewritten": 0,
+    "seconds": 0.0
+  },
+  "memory": {
+    "main_process_gb": 2.9510879516601562,
+    "largest_worker_gb": 0.0
+  },
+  "per_file": [
+    {
+      "file": "train-00115-of-01650-effc620a9f915af7.parquet",
+      "rows": 81405,
+      "kept": 37804,
+      "seconds": 287.7190380959073,
+      "rows_per_second": 282.9322680164972
+    }
+  ],
+  "failed_files": [],
+  "huggingface": {
+    "uploaded_files": 0,
+    "upload_failed": 0,
+    "uploaded_bytes": 0,
+    "deleted_local_files": 0
+  }
+}

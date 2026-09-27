@@ -1,0 +1,303 @@
+{
+  "run": {
+    "input_glob": "/data3/dataset/the_pile_deduplicated/data/train-*-of-01650-*.parquet",
+    "start_index": 220,
+    "max_files": 10,
+    "max_rows": null,
+    "batch_size": 64,
+    "num_workers": 8,
+    "enabled": {
+      "langid": true,
+      "pii": true,
+      "content_classification": false,
+      "quality_filter": true,
+      "quality_classifier": true,
+      "deduplication": false
+    },
+    "dedup_params": {
+      "num_hashes": 256,
+      "num_bands": 32,
+      "ngrams": 5,
+      "jaccard_threshold": 0.5
+    },
+    "push_to_hf": false,
+    "hostname": "gnode054",
+    "slurm_job_id": "2716538",
+    "started_at": "2026-09-26T04:45:16",
+    "finished_at": "2026-09-26T04:58:42"
+  },
+  "totals": {
+    "files_processed": 10,
+    "files_failed": 0,
+    "rows_in": 814050,
+    "docs_kept_after_filters": 371119,
+    "docs_kept_final": 371119,
+    "docs_removed": 442931,
+    "kept_pct": 45.589214421718566,
+    "input_bytes": 2728681701,
+    "output_bytes": 831818010,
+    "chars_in": 4912395816,
+    "chars_out": 1919474884
+  },
+  "time": {
+    "wall_seconds": 805.5352003574371,
+    "filtering_wall_seconds": 805.5347535610199,
+    "dedup_seconds": 0.0,
+    "worker_seconds": 4960.68025513499,
+    "parallel_speedup": 6.158244859337673
+  },
+  "throughput": {
+    "rows_per_second_wall": 1010.5703632054622,
+    "rows_per_second_filtering": 1010.5709237265517,
+    "rows_per_second_per_worker": 164.10047778373655,
+    "mb_per_second_filtering": 3.387416481954804
+  },
+  "stages": {
+    "html_detection": {
+      "cpu_seconds": 23.21886615530093,
+      "docs_in": 814050,
+      "latency": {
+        "count": 814050,
+        "mean_ms": 0.028522653589568066,
+        "p50_ms": 0.022016000002622604,
+        "p95_ms": 0.04655700467992574,
+        "p99_ms": 0.12612636404810507,
+        "max_ms": 13.622808270156384
+      },
+      "pct_of_worker_time": 0.4680581081851867
+    },
+    "html_extraction": {
+      "cpu_seconds": 8.377411768888123,
+      "docs_in": 29421,
+      "latency": {
+        "count": 29421,
+        "mean_ms": 0.2847425911635083,
+        "p50_ms": 0.18920100410468876,
+        "p95_ms": 0.7057379698380828,
+        "p99_ms": 1.8947057658806428,
+        "max_ms": 152.40009129047394
+      },
+      "pct_of_worker_time": 0.1688762697457943
+    },
+    "pii_masking": {
+      "cpu_seconds": 2280.4033501995946,
+      "docs_in": 811370,
+      "latency": {
+        "count": 811370,
+        "mean_ms": 2.8105591173166213,
+        "p50_ms": 0.8346899994648993,
+        "p95_ms": 9.065180364996186,
+        "p99_ms": 28.445030860602664,
+        "max_ms": 22205.652236938477
+      },
+      "pct_of_worker_time": 45.96956935168441
+    },
+    "langid": {
+      "cpu_seconds": 372.10479269843927,
+      "docs_in": 811370,
+      "latency": {
+        "count": 811370,
+        "mean_ms": 0.4586129541516201,
+        "p50_ms": 0.27946100453846157,
+        "p95_ms": 1.455982180777937,
+        "p99_ms": 1.7367384955286975,
+        "max_ms": 1595.5078601837158
+      },
+      "docs_removed": 86825,
+      "removed_pct_of_stage_input": 10.701036518481088,
+      "pct_of_worker_time": 7.501083995753594
+    },
+    "quality_filter": {
+      "cpu_seconds": 1273.0759634489805,
+      "docs_in": 724545,
+      "latency": {
+        "count": 724545,
+        "mean_ms": 1.7570695587170138,
+        "p50_ms": 0.5202069878578186,
+        "p95_ms": 5.577805638313292,
+        "p99_ms": 17.579013332724486,
+        "max_ms": 15980.827331542969
+      },
+      "docs_removed": 254768,
+      "removed_pct_of_stage_input": 35.16248128135589,
+      "pct_of_worker_time": 25.66333442134616
+    },
+    "quality_classifier": {
+      "cpu_seconds": 815.4564111125146,
+      "docs_in": 469777,
+      "latency": {
+        "count": 469777,
+        "mean_ms": 1.7358372406065172,
+        "p50_ms": 0.5180410225875676,
+        "p95_ms": 3.1064399052411305,
+        "p99_ms": 8.449146822094882,
+        "max_ms": 39448.1315612793
+      },
+      "docs_removed": 101338,
+      "removed_pct_of_stage_input": 21.57151158954142,
+      "pct_of_worker_time": 16.438398952813063
+    },
+    "content_classification": {
+      "cpu_seconds": 0.0,
+      "docs_in": 0,
+      "latency": null,
+      "docs_removed": 0,
+      "removed_pct_of_stage_input": 0.0,
+      "pct_of_worker_time": 0.0
+    },
+    "document": {
+      "cpu_seconds": 4960.68025513499,
+      "docs_in": 0,
+      "latency": {
+        "count": 814050,
+        "mean_ms": 5.879867318790284,
+        "p50_ms": 1.898985996376723,
+        "p95_ms": 17.511257063597423,
+        "p99_ms": 49.64725892990831,
+        "max_ms": 41046.92077636719
+      }
+    },
+    "io_read": {
+      "cpu_seconds": 7.486623521850561
+    },
+    "io_write": {
+      "cpu_seconds": 26.449748652565177
+    }
+  },
+  "removal_breakdown": {
+    "by_stage": {
+      "empty_text": 0,
+      "langid": 86825,
+      "quality_filter": 254768,
+      "quality_classifier": 101338,
+      "content_classification": 0,
+      "deduplication": 0
+    },
+    "pct_of_removed": {
+      "empty_text": 0.0,
+      "langid": 19.602375990842816,
+      "quality_filter": 57.51866543547415,
+      "quality_classifier": 22.878958573683033,
+      "content_classification": 0.0,
+      "deduplication": 0.0
+    },
+    "gopher_failed_checks": {
+      "word_count": 37705,
+      "mean_word_length": 1607,
+      "hash_ratio": 1735,
+      "ellipsis_ratio": 387,
+      "bullet_line_ratio": 740,
+      "ellipsis_line_ratio": 13471,
+      "alphabetic_word_ratio": 224854,
+      "stop_word_count": 10794,
+      "empty_or_invalid": 0
+    },
+    "nsfw": 0,
+    "toxic": 0
+  },
+  "pii_masked": {
+    "emails": 56339,
+    "phones": 72996,
+    "ips": 29528,
+    "total": 158863
+  },
+  "html_types": {
+    "plain_text": 784629,
+    "partial_html": 15514,
+    "generic_tags": 6988,
+    "full_html": 3626,
+    "xml": 3293
+  },
+  "deduplication": {
+    "total_docs_before": 0,
+    "total_docs_after": 0,
+    "duplicates_removed": 0,
+    "candidate_pairs": 0,
+    "verified_pairs": 0,
+    "files_rewritten": 0,
+    "seconds": 0.0
+  },
+  "memory": {
+    "main_process_gb": 0.1307830810546875,
+    "largest_worker_gb": 3.7409095764160156
+  },
+  "per_file": [
+    {
+      "file": "train-00227-of-01650-3b7c4137bbcc9056.parquet",
+      "rows": 81405,
+      "kept": 37452,
+      "seconds": 541.2338281789998,
+      "rows_per_second": 150.4063415139626
+    },
+    {
+      "file": "train-00220-of-01650-3421181c9a0de1af.parquet",
+      "rows": 81405,
+      "kept": 37296,
+      "seconds": 548.5370801120007,
+      "rows_per_second": 148.40382346327192
+    },
+    {
+      "file": "train-00221-of-01650-2eb74e5f07b851cd.parquet",
+      "rows": 81405,
+      "kept": 37245,
+      "seconds": 548.9243428870031,
+      "rows_per_second": 148.29912547120784
+    },
+    {
+      "file": "train-00222-of-01650-2f2587da29909e25.parquet",
+      "rows": 81405,
+      "kept": 36972,
+      "seconds": 552.8410777909958,
+      "rows_per_second": 147.24846483056663
+    },
+    {
+      "file": "train-00223-of-01650-b2c457daa43ba2b5.parquet",
+      "rows": 81405,
+      "kept": 36995,
+      "seconds": 557.341835665,
+      "rows_per_second": 146.05937467958157
+    },
+    {
+      "file": "train-00225-of-01650-76c3239c63591182.parquet",
+      "rows": 81405,
+      "kept": 36995,
+      "seconds": 558.2765385849998,
+      "rows_per_second": 145.81483256725784
+    },
+    {
+      "file": "train-00226-of-01650-3e3d7b0952fc7d68.parquet",
+      "rows": 81405,
+      "kept": 37000,
+      "seconds": 559.6584759089965,
+      "rows_per_second": 145.45477912718488
+    },
+    {
+      "file": "train-00224-of-01650-41601fc9972ae1dd.parquet",
+      "rows": 81405,
+      "kept": 36946,
+      "seconds": 581.2878171699995,
+      "rows_per_second": 140.0425014863039
+    },
+    {
+      "file": "train-00228-of-01650-66989562a5a82c52.parquet",
+      "rows": 81405,
+      "kept": 37150,
+      "seconds": 256.1809254999971,
+      "rows_per_second": 317.76370485475866
+    },
+    {
+      "file": "train-00229-of-01650-dd9d31c820a86481.parquet",
+      "rows": 81405,
+      "kept": 37068,
+      "seconds": 256.3983333369979,
+      "rows_per_second": 317.4942634787142
+    }
+  ],
+  "failed_files": [],
+  "huggingface": {
+    "uploaded_files": 0,
+    "upload_failed": 0,
+    "uploaded_bytes": 0,
+    "deleted_local_files": 0
+  }
+}

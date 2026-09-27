@@ -1,0 +1,45 @@
+Sun Sep 27 00:13:08 2026    /ssd_scratch/mehulag022/a4_bench/profile_2717856/profile.out
+
+         10992192 function calls (10978996 primitive calls) in 19.245 seconds
+
+   Ordered by: internal time
+   List reduced from 3289 to 35 due to restriction <35>
+
+   ncalls  tottime  percall  cumtime  percall filename:lineno(function)
+    13228    3.737    0.000    3.737    0.000 {method 'findall' of 're.Pattern' objects}
+        2    2.829    1.415    2.829    1.415 /home2/mehulag022/venv/lib/python3.10/site-packages/fasttext/FastText.py:90(__init__)
+     4650    2.704    0.001    2.732    0.001 /home2/mehulag022/venv/lib/python3.10/site-packages/fasttext/FastText.py:195(predict)
+    12122    2.516    0.000    2.516    0.000 {method 'sub' of 're.Pattern' objects}
+     2684    2.473    0.001    5.192    0.002 /home2/mehulag022/assignment4-data/cs336_data/quality_filter.py:35(_compute_all_metrics)
+        1    1.459    1.459   18.837   18.837 cs336_data/process_html_pipeline.py:221(process_single_file)
+  3762300    0.920    0.000    0.920    0.000 {method 'search' of 're.Pattern' objects}
+     2474    0.254    0.000    0.254    0.000 {built-in method posix.stat}
+  2751559    0.250    0.000    0.250    0.000 {method 'lower' of 'str' objects}
+2791245/2790525    0.210    0.000    0.210    0.000 {built-in method builtins.len}
+      517    0.198    0.000    0.198    0.000 {built-in method io.open_code}
+        6    0.114    0.019    0.114    0.019 {built-in method gc.collect}
+     5686    0.108    0.000    0.108    0.000 {method 'split' of 'str' objects}
+      517    0.072    0.000    0.072    0.000 {built-in method marshal.loads}
+      531    0.068    0.000    0.068    0.000 {method '__exit__' of '_io._IOBase' objects}
+     2684    0.057    0.000    5.267    0.002 /home2/mehulag022/assignment4-data/cs336_data/quality_filter.py:115(gopher_quality_filter)
+        1    0.055    0.055    0.055    0.055 {built-in method posix.scandir}
+       85    0.055    0.001    0.058    0.001 {built-in method _imp.create_dynamic}
+       16    0.052    0.003    0.052    0.003 /home2/mehulag022/venv/lib/python3.10/site-packages/pyarrow/parquet/core.py:1155(write_table)
+     3000    0.050    0.000   16.287    0.005 cs336_data/process_html_pipeline.py:346(_process_text)
+   456969    0.048    0.000    0.048    0.000 {method 'add' of 'set' objects}
+    12299    0.046    0.000    0.046    0.000 {method 'join' of 'str' objects}
+    85/41    0.033    0.000    0.236    0.006 {built-in method _imp.exec_dynamic}
+   210774    0.029    0.000    0.029    0.000 {method 'endswith' of 'str' objects}
+     3000    0.028    0.000    0.089    0.000 cs336_data/process_html_pipeline.py:183(is_html_content)
+   105463    0.026    0.000    0.026    0.000 {method 'match' of 're.Pattern' objects}
+     8052    0.026    0.000    0.026    0.000 {method 'count' of 'str' objects}
+     1659    0.026    0.000    4.543    0.003 /home2/mehulag022/assignment4-data/cs336_data/quality_classifier_fasttext.py:160(get_all_predictions)
+       47    0.025    0.001    0.025    0.001 cs336_data/process_html_pipeline.py:607(<dictcomp>)
+      114    0.025    0.000    0.025    0.000 /home2/mehulag022/assignment4-data/cs336_data/extract.py:12(extract_text_from_html_bytes)
+      640    0.024    0.000    0.024    0.000 /home2/mehulag022/venv/lib/python3.10/site-packages/pyarrow/vendored/docscrape.py:93(is_unindented)
+    16946    0.021    0.000    0.077    0.000 /usr/lib/python3.10/re.py:288(_compile)
+    16117    0.021    0.000    0.021    0.000 {method 'replace' of 'str' objects}
+     2991    0.020    0.000    1.213    0.000 /home2/mehulag022/assignment4-data/cs336_data/langid.py:52(identify_language)
+    13439    0.018    0.000    0.024    0.000 cs336_data/process_html_pipeline.py:325(_record)
+
+

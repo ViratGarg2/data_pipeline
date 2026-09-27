@@ -25,6 +25,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shutil
 from pathlib import Path
 
 import hydra
@@ -41,6 +42,7 @@ from tqdm import tqdm, trange
 
 import wandb
 from cs336_basics.data import get_batch
+from cs336_basics.streaming_data import StreamingTokenDataset
 from cs336_basics.model import BasicsTransformerLM
 from cs336_basics.optimizer import get_cosine_lr
 from cs336_basics.train_config import Config, register_configs
@@ -64,7 +66,8 @@ def main(cfg: Config) -> None:
     default_cfg = OmegaConf.structured(Config())
     cfg = OmegaConf.merge(default_cfg, cfg_dict)
 
-    train_data = np.memmap(cfg.paths.train_bin, dtype=np.uint16, mode="r")
+    if (cfg.paths.train_bin is None) == (cfg.paths.train_hf_repo is None):
+        raise ValueError("Set exactly one of paths.train_bin or paths.train_hf_repo")
     dev_data = np.memmap(cfg.paths.valid_bin, dtype=np.uint16, mode="r")
     model = BasicsTransformerLM(
         vocab_size=cfg.model.vocab_size,
@@ -117,6 +120,31 @@ def main(cfg: Config) -> None:
                 project=cfg.training.wandb_project,
                 config=OmegaConf.to_container(cfg, resolve=True),
                 name=cfg.paths.model_output.name,
+            )
+
+    # Training data: a local token file, or shards streamed from an HF dataset
+    # (each DDP rank streams a disjoint subset of shards).
+    if cfg.paths.train_hf_repo:
+        stream = StreamingTokenDataset(
+            repo_id=cfg.paths.train_hf_repo,
+            cache_dir=cfg.paths.stream_cache_dir or cfg.paths.model_output / "stream_cache",
+            context_length=cfg.model.context_length,
+            seed=cfg.training.seed,
+            rank=int(os.environ.get("RANK", 0)),
+            world_size=ddp_world_size,
+        )
+
+        def sample_batch():
+            return stream.get_batch(cfg.training.train_batch_size, cfg.training.device)
+    else:
+        train_data = np.memmap(cfg.paths.train_bin, dtype=np.uint16, mode="r")
+
+        def sample_batch():
+            return get_batch(
+                train_data,
+                batch_size=cfg.training.train_batch_size,
+                context_length=cfg.model.context_length,
+                device=cfg.training.device,
             )
 
     # Seed each process differently so we can be sure that they
@@ -181,12 +209,7 @@ def main(cfg: Config) -> None:
     )
 
     # Get the first batch
-    batch_x, batch_y = get_batch(
-        train_data,
-        batch_size=cfg.training.train_batch_size,
-        context_length=cfg.model.context_length,
-        device=cfg.training.device,
-    )
+    batch_x, batch_y = sample_batch()
     for i in (pbar := trange(cfg.training.train_steps, desc="Training", disable=not is_master_process)):
         lr = get_cosine_lr(
             i,
@@ -207,12 +230,7 @@ def main(cfg: Config) -> None:
                 logits = model(batch_x)
 
                 # immediately async prefetch next batch while model is doing the forward pass on the GPU
-                next_batch_x, next_batch_y = get_batch(
-                    train_data,
-                    batch_size=cfg.training.train_batch_size,
-                    context_length=cfg.model.context_length,
-                    device=cfg.training.device,
-                )
+                next_batch_x, next_batch_y = sample_batch()
 
                 # Calculate the loss with the logits
                 loss = (
@@ -267,6 +285,14 @@ def main(cfg: Config) -> None:
                 # Write weights:
                 torch.save(model.state_dict(), model_weights_output_path)
 
+                # Prune older checkpoints to bound disk use.
+                keep_every = cfg.training.checkpoint_keep_every
+                if keep_every:
+                    for old_dir in cfg.paths.model_output.glob("step_*"):
+                        step = int(old_dir.name.split("_")[1])
+                        if step != i and step % keep_every != 0:
+                            shutil.rmtree(old_dir, ignore_errors=True)
+
     # Calculate final estimated dev loss
     if is_master_process:
         dev_loss = estimate_dev_loss(
@@ -291,6 +317,7 @@ def main(cfg: Config) -> None:
 
 
 @torch.no_grad()
+@torch.no_grad()  # eval needs no autograd graph; same loss, far less memory
 def estimate_dev_loss(
     model: BasicsTransformerLM,
     dev_dataset: npt.NDArray,

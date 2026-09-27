@@ -15,10 +15,12 @@ import argparse
 import multiprocessing
 import os
 import struct
-
+from pathlib import Path
+import sys
 import numpy as np
 from tqdm import tqdm
 from transformers import AutoTokenizer, logging as hf_logging
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 from datasets import load_dataset
 from huggingface_hub import login
 
@@ -26,7 +28,7 @@ from huggingface_hub import login
 # This is expected — the training script samples fixed-length windows from the .bin file.
 hf_logging.set_verbosity_error()
 
-from config import HUGGINGFACE_API_KEY
+from cs336_data.config import HUGGINGFACE_KEY
 
 # ============================================================
 # Worker initializer for multiprocessing
@@ -73,7 +75,7 @@ def parse_args():
         help="Dataset split to load, e.g. val, test, train (default: val)",
     )
     parser.add_argument(
-        "--output", type=str, default="/ssd_scratch/virat/val_train.bin",
+        "--output", type=str, default=str(Path(__file__).resolve().parent / "val_train.bin"),
         help="Output .bin file path",
     )
     parser.add_argument(
@@ -115,7 +117,8 @@ def main():
     # Authenticate with HuggingFace
     # ----------------------------------------------------------
     print("🔑 Logging into HuggingFace...")
-    login(token=HUGGINGFACE_API_KEY)
+    if HUGGINGFACE_KEY:  # otherwise use the cached `huggingface-cli login` token
+        login(token=HUGGINGFACE_KEY)
 
     os.makedirs(os.path.dirname(args.output) or ".", exist_ok=True)
 

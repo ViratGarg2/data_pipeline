@@ -1,0 +1,125 @@
+PIPELINE COMPLETE - FINAL STATISTICS
+============================================================
+Total files processed:    30
+Total rows processed:     2,442,150
+Total HTML detected:      88,095
+Total text extracted:     88,095
+Total extraction failed:  0
+Total time:               2860.72 seconds
+Processing rate:          853.68 rows/sec
+------------------------------------------------------------
+⏱  AGGREGATE TIMING PROFILE (sum of CPU-seconds across all workers)
+------------------------------------------------------------
+  Wall-clock time:          2860.72s
+  Total CPU-seconds:       11019.19s  (across 30 files)
+  Effective speedup:           3.85x  (ideal=4x)
+  Step                            CPU-sec   % of CPU   Avg/file
+  ------------------------------------------------------------
+  I/O Read (parquet decode)         21.26       0.2%       0.71  
+  HTML Detection                    66.90       0.6%       2.23  
+  HTML Extraction                   25.90       0.2%       0.86  
+  PII Masking                     4953.79      45.0%     165.13  ██████████████████████
+  Language ID (FastText)          1067.74       9.7%      35.59  ████
+  Gopher Quality Filter           2855.87      25.9%      95.20  ████████████
+  Fasttext Quality Clf            1593.22      14.5%      53.11  ███████
+  Content Classification             0.00       0.0%       0.00  
+  I/O Write (parquet enc)           65.46       0.6%       2.18  
+  Overhead / other                 369.03       3.3%
+------------------------------------------------------------
+PII MASKING SUMMARY
+------------------------------------------------------------
+Email addresses masked:   170,167
+Phone numbers masked:     204,590
+IP addresses masked:      84,172
+Total PII masked:         458,929
+------------------------------------------------------------
+HTML TYPE BREAKDOWN
+------------------------------------------------------------
+Type                           Count      Percentage
+------------------------------------------------------------
+plain_text                 2,354,055          96.39%
+partial_html                  45,845           1.88%
+generic_tags                  20,824           0.85%
+full_html                     11,188           0.46%
+xml                           10,238           0.42%
+------------------------------------------------------------
+TOTAL                      2,442,150         100.00%
+------------------------------------------------------------
+LANGUAGE BREAKDOWN
+------------------------------------------------------------
+Language                  Code            Count   Percentage
+------------------------------------------------------------
+English                   en          2,390,676       98.22%
+Chinese                   zh              6,125        0.25%
+Portuguese                pt              4,423        0.18%
+Japanese                  ja              4,407        0.18%
+Spanish                   es              4,148        0.17%
+Russian                   ru              4,121        0.17%
+French                    fr              3,841        0.16%
+German                    de              3,222        0.13%
+Italian                   it              1,677        0.07%
+Swedish                   sv                829        0.03%
+Ukrainian                 uk                820        0.03%
+Dutch                     nl                798        0.03%
+Korean                    ko                702        0.03%
+Romanian                  ro                612        0.03%
+Turkish                   tr                586        0.02%
+Polish                    pl                546        0.02%
+Danish                    da                543        0.02%
+Finnish                   fi                534        0.02%
+Greek                     el                456        0.02%
+Norwegian                 no                445        0.02%
+Arabic                    ar                347        0.01%
+hr                        hr                326        0.01%
+Persian                   fa                303        0.01%
+Hungarian                 hu                295        0.01%
+Vietnamese                vi                254        0.01%
+la                        la                248        0.01%
+Czech                     cs                219        0.01%
+Indonesian                id                216        0.01%
+ca                        ca                215        0.01%
+sr                        sr                174        0.01%
+... others                                1,958        0.08%
+------------------------------------------------------------
+TOTAL                                 2,434,066      100.00%
+Unique languages detected: 131
+------------------------------------------------------------
+QUALITY CLASSIFIER SUMMARY (Fasttext)
+------------------------------------------------------------
+Positive (high) quality:  1,110,321 (78.39%)
+Negative (low) quality:   306,082 (21.61%)
+Kept (positive only):     1,110,321
+------------------------------------------------------------
+FILTERING SUMMARY (English only, Non-NSFW, Non-Toxic, Quality)
+------------------------------------------------------------
+Total texts processed:    2,442,150
+Texts KEPT:               1,118,405 (45.80%)
+Texts FILTERED OUT:       1,323,745 (54.20%)
+Filtered out due to:
+  - Non-English language: 264,949
+  - Gopher quality:       752,714
+  - Fasttext low quality:  306,082
+  - NSFW content:         0
+  - Toxic content:        0
+------------------------------------------------------------
+GOPHER QUALITY FILTER SUMMARY
+------------------------------------------------------------
+Texts passed quality:     1,416,403 (65.30%)
+Texts failed quality:     752,714 (34.70%)
+Failed quality checks breakdown:
+  - alphabetic_word_ratio: 662,700
+  - word_count: 113,359
+  - ellipsis_line_ratio: 41,818
+  - stop_word_count: 31,957
+  - hash_ratio: 5,348
+  - mean_word_length: 4,733
+  - bullet_line_ratio: 2,116
+  - ellipsis_ratio: 1,145
+------------------------------------------------------------
+HUGGING FACE UPLOAD SUMMARY
+------------------------------------------------------------
+Files uploaded:           30
+Upload failures:          0
+Total uploaded size:      2.36 GB
+Local files deleted:      30
+============================================================

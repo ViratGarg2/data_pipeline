@@ -21,6 +21,7 @@ import re
 import shutil
 import sys
 import time
+from pathlib import Path
 from collections import defaultdict
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from multiprocessing import cpu_count
@@ -30,28 +31,20 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from tqdm import tqdm
 
-# Handle imports for both module and direct execution
-try:
-    from cs336_data.extract import extract_text_from_html_bytes
-    from cs336_data.langid import identify_language, get_language_name
-    from cs336_data.pii_masking import mask_all_pii
-    from cs336_data.toxicity import classify_nsfw, classify_toxic_speech, classify_content
-    from cs336_data.quality_filter import gopher_quality_filter
-    from cs336_data.quality_classifier_fasttext import get_all_predictions
-    from cs336_data.lsh import minhash_lsh_deduplication_tabular_files
-    from cs336_data.jsonl_io import read_jsonl_compressed, write_jsonl_compressed, get_output_path
-    from cs336_data import config
-except ModuleNotFoundError:
-    # When running directly from the cs336_data directory
-    import config
-    from extract import extract_text_from_html_bytes
-    from langid import identify_language, get_language_name
-    from pii_masking import mask_all_pii
-    from toxicity import classify_nsfw, classify_toxic_speech, classify_content
-    from quality_filter import gopher_quality_filter
-    from quality_classifier_fasttext import get_all_predictions
-    from lsh import minhash_lsh_deduplication_tabular_files
-    from jsonl_io import read_jsonl_compressed, write_jsonl_compressed, get_output_path
+# Ensure the project root is on sys.path so cs336_data imports work when this
+# file is run as a script (e.g. from an IDE) rather than via `python -m`.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from cs336_data.extract import extract_text_from_html_bytes
+from cs336_data.langid import identify_language, get_language_name
+from cs336_data.pii_masking import mask_all_pii
+from cs336_data.toxicity import classify_nsfw, classify_toxic_speech
+from cs336_data.quality_filter import gopher_quality_filter
+from cs336_data.quality_classifier_fasttext import get_all_predictions
+from cs336_data.lsh import minhash_lsh_deduplication_tabular_files
+from cs336_data.jsonl_io import read_jsonl_compressed, write_jsonl_compressed, get_output_path
+from cs336_data.pipeline_metrics import build_metrics, new_latency_store, write_metrics
+from cs336_data import config
 
 
 # ---------------- MEMORY MONITORING UTILITIES ----------------
@@ -319,7 +312,20 @@ def process_single_file(
             "io_write": 0.0,
             "total_file": 0.0,
         },
+        # Raw measurements for pipeline_metrics (per-doc latencies in seconds)
+        "input_path": input_path,
+        "input_bytes": os.path.getsize(input_path),
+        "output_bytes": 0,
+        "chars_in": 0,
+        "chars_out": 0,
+        "stage_docs_in": defaultdict(int),
+        "latencies": new_latency_store(),
     }
+
+    def _record(stage: str, elapsed: float):
+        stats["timings"][stage] += elapsed
+        stats["stage_docs_in"][stage] += 1
+        stats["latencies"][stage].append(elapsed)
 
     score_columns = {"language_score", "nsfw_score", "toxic_score", "quality_score"}
     label_columns = {"detected_language", "nsfw_label", "toxic_label", "quality_label"}
@@ -351,7 +357,7 @@ def process_single_file(
         t0 = time.perf_counter()
         is_html, html_type = is_html_content(text)
         stats["html_types"][html_type] += 1
-        stats["timings"]["html_detection"] += time.perf_counter() - t0
+        _record("html_detection", time.perf_counter() - t0)
 
         if is_html:
             stats["html_detected"] += 1
@@ -370,7 +376,7 @@ def process_single_file(
             else:
                 current_text = text
                 stats["extraction_failed"] += 1
-            stats["timings"]["html_extraction"] += time.perf_counter() - t0
+            _record("html_extraction", time.perf_counter() - t0)
         else:
             current_text = text
 
@@ -378,7 +384,7 @@ def process_single_file(
         if enable_pii_masking and current_text:
             t0 = time.perf_counter()
             current_text, pii_stats = mask_all_pii(current_text)
-            stats["timings"]["pii_masking"] += time.perf_counter() - t0
+            _record("pii_masking", time.perf_counter() - t0)
             stats["pii_masked"]["emails"] += pii_stats["emails"]
             stats["pii_masked"]["phones"] += pii_stats["phones"]
             stats["pii_masked"]["ips"] += pii_stats["ips"]
@@ -390,7 +396,7 @@ def process_single_file(
         if enable_langid and current_text:
             t0 = time.perf_counter()
             lang_code, lang_score = identify_language(current_text)
-            stats["timings"]["langid"] += time.perf_counter() - t0
+            _record("langid", time.perf_counter() - t0)
             doc_data["detected_language"] = lang_code
             doc_data["language_score"] = lang_score
             stats["languages"][lang_code] += 1
@@ -404,7 +410,7 @@ def process_single_file(
         if enable_quality_filter and current_text:
             t0 = time.perf_counter()
             quality_passed, quality_details = gopher_quality_filter(current_text)
-            stats["timings"]["quality_filter"] += time.perf_counter() - t0
+            _record("quality_filter", time.perf_counter() - t0)
 
             if quality_passed:
                 stats["quality_filter"]["passed"] += 1
@@ -420,7 +426,7 @@ def process_single_file(
         if enable_quality_classifier and current_text:
             t0 = time.perf_counter()
             predictions = get_all_predictions(current_text)
-            stats["timings"]["quality_classifier"] += time.perf_counter() - t0
+            _record("quality_classifier", time.perf_counter() - t0)
 
             doc_data["quality_label"] = predictions["label"]
             doc_data["quality_score"] = predictions["confidence"]
@@ -436,7 +442,7 @@ def process_single_file(
             t0 = time.perf_counter()
             nsfw_label, nsfw_score = classify_nsfw(current_text)
             toxic_label, toxic_score = classify_toxic_speech(current_text)
-            stats["timings"]["content_classification"] += time.perf_counter() - t0
+            _record("content_classification", time.perf_counter() - t0)
 
             doc_data["nsfw_label"] = nsfw_label
             doc_data["nsfw_score"] = nsfw_score
@@ -465,6 +471,17 @@ def process_single_file(
                 return None
 
         stats["filtered"]["kept"] += 1
+        return doc_data
+
+    def _process_text_timed(text: str) -> dict | None:
+        """_process_text plus end-to-end latency and chars in/out for metrics."""
+        t_doc = time.perf_counter()
+        doc_data = _process_text(text)
+        stats["latencies"]["document"].append(time.perf_counter() - t_doc)
+        if text is not None:
+            stats["chars_in"] += len(text)
+        if doc_data is not None and doc_data["text"]:
+            stats["chars_out"] += len(doc_data["text"])
         return doc_data
 
     def _build_output_columns(source_columns: list[str]) -> list[str]:
@@ -600,7 +617,7 @@ def process_single_file(
 
             for row_idx in range(batch_rows):
                 text = batch_dict[text_column][row_idx]
-                doc_data = _process_text(text)
+                doc_data = _process_text_timed(text)
                 if doc_data is None:
                     continue
 
@@ -654,7 +671,7 @@ def process_single_file(
         stats["total_rows"] = len(texts)
 
         for idx, text in enumerate(tqdm(texts, desc="  Processing rows", unit="rows", leave=False)):
-            doc_data = _process_text(text)
+            doc_data = _process_text_timed(text)
             if doc_data is None:
                 continue
 
@@ -681,6 +698,8 @@ def process_single_file(
 
     # Record total file time
     stats["timings"]["total_file"] = time.perf_counter() - file_start_time
+    if output_path and os.path.exists(output_path):
+        stats["output_bytes"] = os.path.getsize(output_path)
 
     # Print per-step timing breakdown
     t = stats["timings"]
@@ -760,6 +779,22 @@ def _merge_stats(total_stats: dict, file_stats: dict, enable_flags: dict) -> Non
         for step, secs in file_stats["timings"].items():
             total_stats["timings"][step] = total_stats["timings"].get(step, 0.0) + secs
 
+    # Raw measurements for pipeline_metrics
+    for key in ("input_bytes", "output_bytes", "chars_in", "chars_out"):
+        total_stats[key] += file_stats[key]
+    for stage, count in file_stats["stage_docs_in"].items():
+        total_stats["stage_docs_in"][stage] += count
+    for stage, samples in file_stats["latencies"].items():
+        total_stats["latencies"][stage].extend(samples)
+    file_seconds = file_stats["timings"]["total_file"]
+    total_stats["per_file"].append({
+        "file": os.path.basename(file_stats["input_path"]),
+        "rows": file_stats["total_rows"],
+        "kept": file_stats["filtered"]["kept"],
+        "seconds": file_seconds,
+        "rows_per_second": file_stats["total_rows"] / file_seconds if file_seconds > 0 else 0.0,
+    })
+
 
 def _process_file_worker(kwargs: dict) -> dict:
     """
@@ -821,6 +856,7 @@ def run_pipeline(
     hf_path_prefix: str = "",
     delete_local_after_hf_upload: bool = True,
     num_workers: int = 1,
+    metrics_json: str | None = None,
 ):
     """
     Run the full HTML extraction, language identification, PII masking, content classification, and quality filtering pipeline.
@@ -886,7 +922,7 @@ def run_pipeline(
     if push_to_hf and not hf_repo_id:
         raise ValueError("HF upload enabled but no repo configured. Set --hf-repo-id or config.HUGGINGFACE_DATASET_REPO")
     if push_to_hf and not hf_token:
-        raise ValueError("HF upload enabled but config.HUGGINGFACE_KEY is empty")
+        raise ValueError("HF upload enabled but no token: export HF_TOKEN=... (see cs336_data/config.py)")
     if push_to_hf and enable_deduplication and delete_local_after_hf_upload:
         raise ValueError(
             "delete_local_after_hf_upload cannot be used with deduplication. "
@@ -985,9 +1021,18 @@ def run_pipeline(
             "verified_pairs": 0,
             "files_rewritten": 0,
         },
+        "failed_files": [],
+        "input_bytes": 0,
+        "output_bytes": 0,
+        "chars_in": 0,
+        "chars_out": 0,
+        "stage_docs_in": defaultdict(int),
+        "latencies": new_latency_store(),
+        "per_file": [],
     }
-    
+
     start_time = time.time()
+    dedup_elapsed = 0.0
     
     # Track which output files were actually written in THIS run
     output_files_this_run: list[str] = []
@@ -1025,6 +1070,7 @@ def run_pipeline(
         """Print per-file stats from a completed worker result."""
         filename = os.path.basename(result["input_path"])
         if not result["success"]:
+            total_stats["failed_files"].append(result["input_path"])
             print(f"\n[{file_idx+1}/{total_files}] ERROR processing {filename}:")
             print(result["error"])
             return
@@ -1144,6 +1190,7 @@ def run_pipeline(
 
             force_memory_cleanup()
     
+    files_done_time = time.time()
     print_memory_status("\n  [AFTER ALL FILES] ")
     
     # ==================================================================
@@ -1198,6 +1245,7 @@ def run_pipeline(
                 ngrams=dedup_ngrams,
                 jaccard_threshold=dedup_jaccard_threshold,
                 batch_size=batch_size,
+                workers=num_workers,  # signature step is embarrassingly parallel
                 verbose=True,
             )
 
@@ -1485,9 +1533,38 @@ def run_pipeline(
         print(f"Total uploaded size:      {uploaded_gb:.2f} GB")
         print(f"Local files deleted:      {hf_stats['deleted_local_files']:,}")
         print()
-    
+
+    if total_stats["failed_files"]:
+        print("-" * 60)
+        print(f"FAILED FILES: {len(total_stats['failed_files'])} of {len(file_jobs)}")
+        print("-" * 60)
+        for path in total_stats["failed_files"]:
+            print(f"  {path}")
+        print()
+
     print("=" * 60)
-    
+
+    if metrics_json:
+        run_config = {
+            "input_glob": input_glob,
+            "start_index": start_index,
+            "max_files": max_files,
+            "max_rows": max_rows,
+            "batch_size": batch_size,
+            "num_workers": num_workers,
+            "enabled": {**enable_flags, "deduplication": enable_deduplication},
+            "dedup_params": {
+                "num_hashes": dedup_num_hashes,
+                "num_bands": dedup_num_bands,
+                "ngrams": dedup_ngrams,
+                "jaccard_threshold": dedup_jaccard_threshold,
+            },
+            "push_to_hf": push_to_hf,
+        }
+        write_metrics(metrics_json, build_metrics(
+            total_stats, run_config, start_time, files_done_time, end_time, dedup_elapsed,
+        ))
+
     return total_stats
 
 
@@ -1619,6 +1696,13 @@ if __name__ == "__main__":
         help="Keep local output files after successful HF upload"
     )
     
+    parser.add_argument(
+        "--metrics-json",
+        type=str,
+        default=None,
+        help="Write run metrics (throughput, per-stage latency/time, docs removed per filter) to this JSON file"
+    )
+    
     args = parser.parse_args()
     
     # Handle max_rows: -1 means all rows
@@ -1630,7 +1714,7 @@ if __name__ == "__main__":
         input_glob = INPUT_GLOB_JSON
         print(f"Using JSONL input glob from config: {input_glob}")
     
-    run_pipeline(
+    stats = run_pipeline(
         input_glob=input_glob,
         output_dir=args.output_dir,
         text_column=args.text_column,
@@ -1652,4 +1736,9 @@ if __name__ == "__main__":
         hf_path_prefix=args.hf_path_prefix,
         delete_local_after_hf_upload=not args.keep_local_after_hf_upload,
         num_workers=args.workers,
+        metrics_json=args.metrics_json,
     )
+
+    # Exit non-zero so SLURM marks the job FAILED instead of reporting a clean run.
+    if stats["failed_files"] or stats["huggingface"]["upload_failed"]:
+        sys.exit(1)

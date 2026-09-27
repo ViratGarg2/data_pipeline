@@ -1,7 +1,11 @@
 """
 Configuration for the data processing pipeline.
 """
-HUGGINGFACE_KEY = "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"
+import os
+
+# Hugging Face token: read from the environment, never stored in the repo.
+# export HF_TOKEN=... (or HUGGINGFACE_KEY=...), or run `huggingface-cli login`.
+HUGGINGFACE_KEY = os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_KEY") or None
 # Dataset repo to upload processed files (format: "username/repo")
 HUGGINGFACE_DATASET_REPO = ""
 # Optional folder path inside the dataset repo, e.g. "processed/train"
