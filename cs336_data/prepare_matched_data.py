@@ -30,6 +30,7 @@ import os
 import shutil
 import sys
 import time
+import zlib
 from pathlib import Path
 
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "true")
@@ -101,9 +102,17 @@ def write_filtered(src_parquet: str, out_text: str, out_tokens: str) -> dict:
     return {"docs": n_docs, "tokens": n_tokens, "pipeline_columns": source.schema_arrow.names}
 
 
-def write_unfiltered(raw_parquet: str, target_tokens: int, seed: int, out_text: str, out_tokens: str) -> dict:
+def read_raw_texts(raw_path: str) -> list[str]:
+    """Raw documents of one source file: a Pile parquet shard or a Common Crawl WET file."""
+    if raw_path.endswith(".warc.wet.gz"):
+        from cs336_data.jsonl_io import read_wet_file
+
+        return read_wet_file(raw_path)["text"]
+    return pq.read_table(raw_path, columns=["text"]).column("text").to_pylist()
+
+
+def write_unfiltered(texts: list[str], source: str, target_tokens: int, seed: int, out_text: str, out_tokens: str) -> dict:
     """Sample raw docs in seeded random order until exactly target_tokens are written."""
-    texts = pq.read_table(raw_parquet, columns=["text"]).column("text").to_pylist()
     order = np.random.default_rng(seed).permutation(len(texts))
 
     rows, kept_texts = [], []
@@ -127,7 +136,7 @@ def write_unfiltered(raw_parquet: str, target_tokens: int, seed: int, out_text: 
                 break
 
     if n_tokens < target_tokens:
-        raise RuntimeError(f"{raw_parquet} has only {n_tokens} tokens, needed {target_tokens}")
+        raise RuntimeError(f"{source} has only {n_tokens} tokens, needed {target_tokens}")
 
     pq.write_table(
         pa.table({"text": kept_texts, "source_row": pa.array(rows, type=pa.int32())}),
@@ -164,7 +173,12 @@ def parse_shards(spec: str) -> list[int]:
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--shards", required=True, help="Shard ranges, e.g. 210-238 or 0-71,80-114")
+    parser.add_argument("--shards", help="Pile shard ranges, e.g. 210-238 or 0-71,80-114")
+    parser.add_argument(
+        "--wet-dir",
+        help="Instead of --shards: pair each Common Crawl WET file in this directory with its "
+             "pipeline output <name>.parquet in --filtered-dir",
+    )
     parser.add_argument("--filtered-dir", help="Local directory with pipeline outputs for these shards")
     parser.add_argument("--filtered-hf-repo", help="Instead of --filtered-dir, download pipeline outputs from this HF dataset")
     parser.add_argument("--filtered-hf-prefix", default="processed")
@@ -182,22 +196,35 @@ def main():
 
     if not (args.filtered_dir or args.filtered_hf_repo):
         parser.error("one of --filtered-dir or --filtered-hf-repo is required")
+    if bool(args.shards) == bool(args.wet_dir):
+        parser.error("give exactly one of --shards or --wet-dir")
+    if args.wet_dir and not args.filtered_dir:
+        parser.error("--wet-dir needs --filtered-dir")
 
     sides = {"filtered": args.filtered_repo, "unfiltered": args.unfiltered_repo}
     for side in sides:
         for sub in ("text", "tokens", "manifests"):
             os.makedirs(os.path.join(args.stage_dir, side, sub), exist_ok=True)
 
-    for shard in parse_shards(args.shards):
+    if args.wet_dir:
+        jobs = []
+        for wet in sorted(glob.glob(os.path.join(args.wet_dir, "*.warc.wet.gz"))):
+            stem = os.path.basename(wet)[: -len(".warc.wet.gz")]
+            jobs.append((stem, None, wet, args.seed + zlib.crc32(stem.encode()) % 1_000_000))
+    else:
+        jobs = [(f"train-{shard:05d}", shard, None, args.seed + shard) for shard in parse_shards(args.shards)]
+
+    for name, shard, raw, seed in jobs:
         t0 = time.time()
-        name = f"train-{shard:05d}"
-        if args.filtered_hf_repo:
+        if shard is None:
+            src = os.path.join(args.filtered_dir, f"{name}.parquet")
+        elif args.filtered_hf_repo:
             src = fetch_filtered_from_hf(
                 args.filtered_hf_repo, args.filtered_hf_prefix, shard, os.path.join(args.stage_dir, "download"),
             )
         else:
             src = shard_file(args.filtered_dir, shard)
-        raw = shard_file(args.raw_dir, shard)
+        raw = raw or shard_file(args.raw_dir, shard)
 
         filtered = write_filtered(
             src,
@@ -205,14 +232,14 @@ def main():
             os.path.join(args.stage_dir, "filtered", "tokens", f"{name}.bin"),
         )
         unfiltered = write_unfiltered(
-            raw, filtered["tokens"], args.seed + shard,
+            read_raw_texts(raw), raw, filtered["tokens"], seed,
             os.path.join(args.stage_dir, "unfiltered", "text", f"{name}.parquet"),
             os.path.join(args.stage_dir, "unfiltered", "tokens", f"{name}.bin"),
         )
         manifest = {
-            "shard": shard,
+            "shard": shard if shard is not None else name,
             "source_file": os.path.basename(raw),
-            "seed": args.seed + shard,
+            "seed": seed,
             "tokenizer": "gpt2",
             "token_dtype": "uint16",
             "filtered": filtered,

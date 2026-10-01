@@ -38,6 +38,22 @@ def production_run():
         print(f"  {label:28s} {m.group(1) if m else 'n/a'}")
 
 
+def production_throughput():
+    section("Production throughput, 8 workers per task (metrics/pipeline_shards_*.json)")
+    chars = wall = rows = 0
+    for path in sorted(glob.glob(os.path.join(HERE, "pipeline_shards_*.json"))):
+        m = json.load(open(path))
+        if m["totals"]["rows_in"] < 500_000:  # skip the single-shard task
+            continue
+        chars += m["totals"]["chars_in"]
+        wall += m["time"]["filtering_wall_seconds"]
+        rows += m["totals"]["rows_in"]
+    print(f"  {chars / 1e9:.1f} GB of text, {rows / wall:.0f} rows/s, {wall / 60 / (chars / 1e9):.1f} min per GB of text, "
+          f"{chars / 1e9 / (wall / 3600):.1f} GB/hour per task")
+    m = json.load(open(os.path.join(HERE, "bench", "scale_w16.json")))
+    print(f"  16 workers: {m['time']['filtering_wall_seconds'] / 60 / (m['totals']['chars_in'] / 1e9):.1f} min per GB of text")
+
+
 def scaling():
     section("Worker scaling, 16 shards x 20k rows (metrics/bench/scale_w*.json)")
     base = None
@@ -108,11 +124,45 @@ def baseline():
               f"perplexity {s['perplexity']:.1f}, {s['eval_tokens']:,} tokens on {s['device']}")
 
 
+def training():
+    section("Training: validation loss (metrics/train_25k_eval_curves.csv)")
+    import csv
+    rows = list(csv.DictReader(open(os.path.join(HERE, "train_25k_eval_curves.csv"))))
+    for r in rows:
+        print(f"  step {int(r['step']):>6}  filtered {r['filtered_val_loss']}  unfiltered {r['unfiltered_val_loss']}  gap {r['gap']}")
+    gaps = [float(r["gap"]) for r in rows]
+    print(f"  filtered ahead at {sum(g > 0 for g in gaps)}/{len(gaps)} evaluations; gap range {min(gaps):.3f}-{max(gaps):.3f}")
+    final_unf = float(rows[-1]["unfiltered_val_loss"])
+    pts = [(int(r["step"]), float(r["filtered_val_loss"])) for r in rows]
+    for (s0, l0), (s1, l1) in zip(pts, pts[1:]):
+        if l0 >= final_unf >= l1:
+            step = s0 + (l0 - final_unf) / (l0 - l1) * (s1 - s0)
+            print(f"  filtered reached the unfiltered final loss {final_unf:.3f} at ~{step:,.0f} steps -> "
+                  f"{pts[-1][0] / step:.2f}x compute")
+
+
+def comparison():
+    for path in sorted(glob.glob(os.path.join(ROOT, "inference_check", "results", "compare_25k_summary_*.json"))):
+        section(f"Final models ({os.path.relpath(path, ROOT)})")
+        s = json.load(open(path))
+        for arm, m in s["models"].items():
+            for name in ("paloma_c4", "heldout_pile"):
+                e = m[name]
+                print(f"  {arm:10s} {name:12s} loss {e['loss']:.3f}  ppl {e['perplexity']:.1f}  "
+                      f"next-token acc {100 * e['next_token_accuracy']:.2f}%")
+            g = m["generation_gpt2_ppl"]
+            print(f"  {arm:10s} generations: median GPT-2 ppl {g['median']:.2f} (n={g['n']})")
+        print(f"  prompts where filtered was more natural to GPT-2: {s['prompts_where_filtered_more_fluent']}/50")
+
+
 if __name__ == "__main__":
     production_run()
+    production_throughput()
     scaling()
     ablation()
     latency()
     dedup()
     matched()
+    training()
+    comparison()
     baseline()

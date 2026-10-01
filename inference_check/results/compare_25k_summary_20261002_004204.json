@@ -1,0 +1,58 @@
+{
+  "device": "cuda",
+  "eval_tokens_per_set": 1638400,
+  "sampling": {
+    "temperature": 0.7,
+    "top_k": 50,
+    "max_new_tokens": 100,
+    "seed": 1234
+  },
+  "models": {
+    "filtered": {
+      "repo": "ViratGarg/cs336-a4-filtered-25k",
+      "train_steps": 25000,
+      "final_val_loss_logged": 3.4547231197357178,
+      "paloma_c4": {
+        "loss": 3.4567210257053373,
+        "perplexity": 31.712820322601505,
+        "next_token_accuracy": 0.370704345703125,
+        "tokens": 1638400
+      },
+      "heldout_pile": {
+        "loss": 3.1549578988552094,
+        "perplexity": 23.45204971250569,
+        "next_token_accuracy": 0.44467529296875,
+        "tokens": 1638400
+      },
+      "generation_gpt2_ppl": {
+        "median": 9.736959457397461,
+        "mean": 10.947903139591217,
+        "n": 50
+      }
+    },
+    "unfiltered": {
+      "repo": "ViratGarg/cs336-a4-unfiltered-25k",
+      "train_steps": 25000,
+      "final_val_loss_logged": 3.557990074157715,
+      "paloma_c4": {
+        "loss": 3.558021639585495,
+        "perplexity": 35.093700435264125,
+        "next_token_accuracy": 0.35995849609375,
+        "tokens": 1638400
+      },
+      "heldout_pile": {
+        "loss": 2.6455297446250916,
+        "perplexity": 14.090907688923107,
+        "next_token_accuracy": 0.5039532470703125,
+        "tokens": 1638400
+      },
+      "generation_gpt2_ppl": {
+        "median": 10.891206741333008,
+        "mean": 12.073469676971435,
+        "n": 50
+      }
+    }
+  },
+  "prompts_where_filtered_more_fluent": 30,
+  "csv": "compare_25k_20261002_004204.csv"
+}

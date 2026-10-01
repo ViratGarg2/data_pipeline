@@ -153,6 +153,24 @@ def write_jsonl_compressed(file_path: str, data_dict: dict, compression: str = "
     return file_path
 
 
+def read_wet_file(input_path: str, max_rows: int | None = None) -> dict:
+    """Read a Common Crawl WET file (.warc.wet.gz) into {"text": [...], "url": [...]}.
+
+    WET "conversion" records hold the text Common Crawl extracted from each page.
+    """
+    from fastwarc.stream_io import FileStream, GZipStream
+    from fastwarc.warc import ArchiveIterator, WarcRecordType
+
+    texts, urls = [], []
+    stream = GZipStream(FileStream(input_path, "rb"))
+    for record in ArchiveIterator(stream, record_types=WarcRecordType.conversion):
+        texts.append(record.reader.read().decode("utf-8", errors="replace"))
+        urls.append(record.headers.get("WARC-Target-URI", ""))
+        if max_rows is not None and len(texts) >= max_rows:
+            break
+    return {"text": texts, "url": urls}
+
+
 def get_output_path(input_path: str, output_dir: str, input_format: str, output_format: str) -> str:
     """
     Generate output file path based on input path and desired output format.
@@ -170,7 +188,7 @@ def get_output_path(input_path: str, output_dir: str, input_format: str, output_
     
     # Remove all known extensions
     base = filename
-    for ext in ['.jsonl.zst', '.jsonl.gz', '.jsonl', '.parquet', '.zst', '.gz']:
+    for ext in ['.warc.wet.gz', '.jsonl.zst', '.jsonl.gz', '.jsonl', '.parquet', '.zst', '.gz']:
         if base.endswith(ext):
             base = base[:-len(ext)]
             break

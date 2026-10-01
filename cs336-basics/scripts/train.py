@@ -42,6 +42,7 @@ from tqdm import tqdm, trange
 
 import wandb
 from cs336_basics.data import get_batch
+from cs336_basics.checkpoint_upload import CheckpointUploader
 from cs336_basics.streaming_data import StreamingTokenDataset
 from cs336_basics.model import BasicsTransformerLM
 from cs336_basics.optimizer import get_cosine_lr
@@ -161,6 +162,11 @@ def main(cfg: Config) -> None:
         model_config = model.config
         with open(model_config_output_path, "w") as f:
             json.dump(model_config, f, indent=4)
+
+    # Optional background push of every checkpoint to a Hugging Face model repo.
+    uploader = None
+    if is_master_process and cfg.training.hf_checkpoint_repo:
+        uploader = CheckpointUploader(cfg.training.hf_checkpoint_repo, private=cfg.training.hf_checkpoint_private)
 
     torch_dtype = {
         "float32": torch.float32,
@@ -284,13 +290,24 @@ def main(cfg: Config) -> None:
 
                 # Write weights:
                 torch.save(model.state_dict(), model_weights_output_path)
+                with open(model_weights_output_path.parent / "checkpoint_info.json", "w") as f:
+                    json.dump({"step": i, "eval_loss": float(dev_loss), "train_steps": cfg.training.train_steps}, f)
+                if uploader:
+                    uploader.submit(
+                        model_weights_output_path.parent,
+                        f"step {i}: eval_loss {float(dev_loss):.4f}",
+                        path_in_repo=model_weights_output_path.parent.name,
+                    )
 
-                # Prune older checkpoints to bound disk use.
+                # Prune older checkpoints to bound disk use, never one that is still uploading.
                 keep_every = cfg.training.checkpoint_keep_every
-                if keep_every:
+                if cfg.training.checkpoint_keep_latest or keep_every:
                     for old_dir in cfg.paths.model_output.glob("step_*"):
                         step = int(old_dir.name.split("_")[1])
-                        if step != i and step % keep_every != 0:
+                        keep = step == i or (
+                            not cfg.training.checkpoint_keep_latest and keep_every and step % keep_every == 0
+                        )
+                        if not keep and not (uploader and uploader.is_pending(old_dir)):
                             shutil.rmtree(old_dir, ignore_errors=True)
 
     # Calculate final estimated dev loss
@@ -311,6 +328,15 @@ def main(cfg: Config) -> None:
         model_weights_output_path = cfg.paths.model_output / "model.pt"
         logger.info(f"Saving model weights to {model_weights_output_path}")
         torch.save(model.state_dict(), model_weights_output_path)
+        with open(cfg.paths.model_output / "checkpoint_info.json", "w") as f:
+            json.dump({"step": cfg.training.train_steps, "eval_loss": float(dev_loss), "final": True}, f)
+        if uploader:
+            uploader.submit(
+                cfg.paths.model_output,
+                f"final model: eval_loss {float(dev_loss):.4f}",
+                allow_patterns=["model.pt", "model_config.json", "checkpoint_info.json"],
+            )
+            uploader.close()
 
     if is_ddp:
         destroy_process_group()

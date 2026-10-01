@@ -13,5 +13,6 @@ training:
   wandb_entity: gargvirat5-iiit-hyderabad
   wandb_project: cs336-data
   # eval_batch_size defaults to the micro-batch; 128 x 512 x 50k-vocab logits do not fit on a 24 GB GPU.
-  save_checkpoints: true      # step_N/model.pt at every eval (2k steps) ...
-  checkpoint_keep_every: 10000  # ... keeping every 10k plus the latest
+  save_checkpoints: true        # step_N/model.pt at every eval (2k steps) ...
+  checkpoint_keep_latest: true  # ... deleting the previous one once it is uploaded
+  # hf_checkpoint_repo is set per run by the launch script (pushes every checkpoint to Hugging Face)

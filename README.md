@@ -7,37 +7,61 @@ Built on [Stanford CS336 Assignment 4 (Data)](./data_assign.pdf). Every number b
 | | |
 |---|---|
 | Datasets | [ViratGarg/pile_filtered_13B](https://huggingface.co/datasets/ViratGarg/pile_filtered_13B), [ViratGarg/pile_unfiltered_13B](https://huggingface.co/datasets/ViratGarg/pile_unfiltered_13B) |
+| Trained models (25k steps, every 2k-step checkpoint) | [ViratGarg/cs336-a4-filtered-25k](https://huggingface.co/ViratGarg/cs336-a4-filtered-25k), [ViratGarg/cs336-a4-unfiltered-25k](https://huggingface.co/ViratGarg/cs336-a4-unfiltered-25k) |
 | Earlier model | [ViratGarg/gpt-model](https://huggingface.co/ViratGarg/gpt-model) |
 | Experiment tracking | [W&B project `cs336-data`](https://wandb.ai/gargvirat5-iiit-hyderabad/cs336-data) |
+
+## Highlights
+
+| | |
+|---|---|
+| **Perplexity on clean web text (Paloma C4)** | **31.7** with filtered data vs 35.1 without: 9.7% lower (loss 3.455 vs 3.558), same 162M model, same 3.3B tokens, same seed |
+| **Compute efficiency** | The unfiltered run needs **≈1.43× the training compute** to reach the filtered run's loss |
+| **More natural text** | Median GPT-2 perplexity of generations **9.74 vs 10.89**; filtered text reads more naturally on 30 of 50 prompts |
+| **Pipeline throughput** | **≈970 documents/s** per 8-CPU task: **2.9 min per GB of raw text** (≈21 GB/hour), 1.6 min/GB with 16 workers |
+| **Dedup optimisation** | MinHash-LSH dedup **15.3× faster** (73 min → 4.8 min) with bit-identical output |
+| **Scale** | 22.0M Pile documents filtered across 19 parallel cluster tasks into two token-matched 13.59B-token datasets |
+
+**Same prompt, both models** (seed and sampling identical; full text in the [CSV](inference_check/results/compare_25k_20261002_004204.csv), prompt 16):
+
+> **Prompt:** The human heart pumps blood by
+>
+> **Filtered model** (GPT-2 ppl 6.3): …pumping it into the veins. This is called heart pump activity. The heart pump activity is a means of pumping blood to the lungs from a place in the body called the heart.
+>
+> **Unfiltered model** (GPT-2 ppl 16.4): …the end of the day. This is a real problem, and it will never pass. I think I have to mention that since I wrote this in 2009, I have been able to get a good feeling for your situation.
 
 ## Key results
 
 | Result | Value | Evidence |
 |---|---|---|
+| Paloma C4 validation loss, filtered vs unfiltered (same model, tokens, seed) | **3.455 vs 3.558** (perplexity 31.7 vs 35.1) | `metrics/train_25k_eval_curves.csv` |
+| Compute the unfiltered run needs to match the filtered run's loss | ≈1.4× (its final 3.558 = filtered at ~17.4k of 25k steps) | `metrics/train_25k_eval_curves.csv` |
+| Held-out raw Pile loss, filtered vs unfiltered | 3.155 vs **2.646**: unfiltered wins on raw Pile text | `inference_check/results/compare_25k_summary_20261002_004204.json` |
 | Pile documents processed | 21,979,350 (270 shards × 81,405) | `shards_complete` in `metrics/matched_data_summary.json`; `unfiltered.raw_docs_in_shard` in each dataset manifest |
 | Tokens in each dataset, matched exactly | 13,589,978,522 | `metrics/matched_data_summary.json` |
+| Filtering throughput, production settings, 8 workers per task | 970 rows/s; 2.9 min per GB of raw text (33.1 GB measured) | `metrics/pipeline_shards_*.json` |
 | Dedup speedup after vectorising MinHash, identical output | 15.3× (4,390.8 s → 287.5 s) | `metrics/bench/stage_plus_dedup*.json` |
 | Filtering speedup, 1 → 16 workers | 5.72× (304 → 1,739 rows/s) | `metrics/bench/scale_w*.json` |
 | Median / p99 filtering latency per document | 2.45 ms / 61.71 ms | `metrics/bench/stage_production.json` |
 | Cost of PII masking (runtime saved when disabled) | 44.6% of wall time | `metrics/bench/stage_no_pii.json` |
-| Tests | 22 passing | `uv run pytest` |
+| Tests | 22 | `uv run pytest` |
 
 ## Pipeline
 
 ```mermaid
 flowchart LR
-    A[Pile shard<br/>81,405 docs] --> B[HTML detect + extract]
-    B --> C[PII masking<br/>email, phone, IP]
-    C --> D[Language ID<br/>fastText lid.176]
+    A[Pile shard / CC WET file] --> B[HTML detect + extract]
+    B --> D[Language ID<br/>fastText lid.176]
     D --> E[Gopher rules]
     E --> F[Quality classifier<br/>fastText]
     F -.optional.-> G[NSFW / toxicity]
-    G -.optional.-> H[MinHash-LSH dedup]
+    G --> C[PII masking<br/>email, phone, IP]
+    C -.optional.-> H[MinHash-LSH dedup]
     H --> I[GPT-2 tokenise<br/>+ token matching]
     I --> J[Hugging Face]
 ```
 
-Each shard is processed by its own worker process (`--workers`), and shards are spread across cluster nodes with SLURM job arrays. Every stage is timed per document and every removal is counted by reason; `--metrics-json` writes a report with throughput, per-stage CPU time, latency percentiles, removals by reason and peak memory ([`cs336_data/pipeline_metrics.py`](cs336_data/pipeline_metrics.py)).
+PII masking now runs last, on kept documents only, since it is the most expensive stage; the datasets and benchmarks below were produced with the earlier order (PII masking before language ID), and the new order has not been re-benchmarked yet. Inputs can be Pile parquet shards, JSONL or Common Crawl WET files (`--input-format wet`). Each shard is processed by its own worker process (`--workers`), and shards are spread across cluster nodes with SLURM job arrays. Every stage is timed per document and every removal is counted by reason; `--metrics-json` writes a report with throughput, per-stage CPU time, latency percentiles, removals by reason and peak memory ([`cs336_data/pipeline_metrics.py`](cs336_data/pipeline_metrics.py)).
 
 ### Where 2.44 million documents went
 
@@ -87,7 +111,7 @@ One change at a time against production settings: 8 workers, 8 shards × 20,000 
 
 Findings:
 
-- **PII masking is the most expensive filter**: 39.5% of CPU time. It runs on every document although only 45% survive filtering, so moving it after the filters would skip most of that work.
+- **PII masking is the most expensive filter**: 39.5% of CPU time. It ran on every document although only 45% survive filtering; it now runs after the filters (not yet re-benchmarked).
 - **Language ID is largely redundant on the Pile**: without it, the Gopher rules reject non-English documents anyway and the kept share is unchanged.
 - **NSFW / toxicity filtering is poor value here**: +32% runtime to remove 0.14% of documents.
 - **The two quality filters overlap**: without Gopher, the classifier removes twice as many documents, yet the kept share still rises from 45.2% to 64.9%.
@@ -150,7 +174,46 @@ Evidence: `metrics/matched_data_summary.json`, produced by [`cs336_data/verify_m
 
 Both runs use the assignment's GPT-2-small configuration (12 layers, d_model 768, 162M parameters, context 512, global batch 256 sequences, cosine schedule, seed 0); only the dataset differs. Shards stream from Hugging Face during training ([`cs336-basics/cs336_basics/streaming_data.py`](cs336-basics/cs336_basics/streaming_data.py)), so a run needs about 1 GB of disk instead of 27 GB.
 
-**Status: the filtered-versus-unfiltered runs are queued until the shared GPU is free.**
+Both runs trained for 25,000 steps (3.28B tokens each, ~17.7 h each on one RTX 3090): W&B runs [filtered_25k](https://wandb.ai/gargvirat5-iiit-hyderabad/cs336-data/runs/6eux2izo) and [unfiltered_25k](https://wandb.ai/gargvirat5-iiit-hyderabad/cs336-data/runs/2c8k5yoe). Every 2k-step checkpoint and the final model are on the Hub.
+
+### Validation loss during training (Paloma C4)
+
+Evidence: `metrics/train_25k_eval_curves.csv`, exported from W&B.
+
+| Step | Tokens seen | Filtered | Unfiltered | Gap |
+|---:|---:|---:|---:|---:|
+| 2,000 | 0.26B | 4.082 | 4.199 | 0.117 |
+| 6,000 | 0.79B | 3.803 | 3.911 | 0.108 |
+| 10,000 | 1.31B | 3.702 | 3.850 | 0.148 |
+| 14,000 | 1.84B | 3.606 | 3.712 | 0.106 |
+| 18,000 | 2.36B | 3.545 | 3.654 | 0.109 |
+| 22,000 | 2.88B | 3.485 | 3.582 | 0.097 |
+| **25,000** | **3.28B** | **3.455** | **3.558** | **0.103** |
+
+The filtered model is ahead at all 13 evaluations (gap 0.088–0.148). Each estimate averages 1,000 batches, so its uncertainty is roughly ±0.01, an order of magnitude below the gap. The unfiltered model's final loss is what the filtered model reached at about 17.4k steps (between 3.590 at 16k and 3.545 at 18k), so on this benchmark the filtered data is worth roughly 1.4× the compute. Each arm has one seed.
+
+### Final models on two held-out sets, and generations
+
+[`inference_check/compare_models.py`](inference_check/compare_models.py) evaluates both final models on the same 1.64M-token sample of each set (random 512-token windows) and generates from 50 prompts with the same seed per prompt (temperature 0.7, top-k 50, 100 new tokens). Each generation is scored by the original GPT-2 (124M) as a neutral fluency judge: the perplexity GPT-2 assigns to the generated continuation. Evidence: `inference_check/results/compare_25k_summary_20261002_004204.json`; all 50 prompts with both models' outputs are in [`inference_check/results/compare_25k_20261002_004204.csv`](inference_check/results/compare_25k_20261002_004204.csv).
+
+| | Filtered | Unfiltered |
+|---|---:|---:|
+| Paloma C4: loss / perplexity | **3.457 / 31.7** | 3.558 / 35.1 |
+| Paloma C4: next-token accuracy | **37.07%** | 36.00% |
+| Held-out raw Pile (shard 1649, 4,000 docs): loss / perplexity | 3.155 / 23.5 | **2.646 / 14.1** |
+| Held-out raw Pile: next-token accuracy | 44.47% | **50.40%** |
+| Generations: median GPT-2 perplexity (lower = more natural) | **9.74** | 10.89 |
+| Prompts where the filtered model's text was more natural to GPT-2 | 30 of 50 | 20 of 50 |
+| Generations with >20% repeated 4-grams | 4 of 50 | 3 of 50 |
+
+What this shows:
+
+- **Filtering helps on clean web text and hurts on raw Pile text.** The filtered model is better on Paloma C4 and writes text GPT-2 finds more natural, but the unfiltered model is much better on held-out raw Pile. The filters removed most code, LaTeX, tables and other structured text; that content is common in raw Pile and very predictable (repetitive syntax), so the model that trained on it wins there. Filtering is a choice about the target distribution, not a free improvement.
+- **Repetition is similar for both** (about 6% repeated 4-grams on average), so the GPT-2 fluency gap is not explained by one model looping more.
+
+GPT-2 perplexity also rewards repetition (one filtered generation that loops on a single sentence scores 1.5), which is why the repeated-4-gram rate is reported alongside it. A same-prompt sample from both models is shown in [Highlights](#highlights).
+
+### Throughput on the training GPU
 
 Measured on the training GPU, an RTX 3090 in bf16 (evidence: `metrics/train_smoke_rtx3090.txt`, W&B run [12fd2vz3](https://wandb.ai/gargvirat5-iiit-hyderabad/cs336-data-smoke/runs/12fd2vz3)):
 
@@ -241,6 +304,12 @@ python inference_check/infer_prev.py /path/to/model_dir
 ```
 
 It uses the GPU only when at least 3 GB is free and otherwise the CPU, and writes a CSV of prompts and generations plus a summary JSON to `inference_check/results/`.
+
+To compare the two trained models (loss, perplexity and next-token accuracy on Paloma C4 and held-out raw Pile, plus 50 prompts scored by GPT-2):
+
+```bash
+python inference_check/compare_models.py work_dir/ /path/to/paloma_c4_100_val.bin
+```
 
 ## Repository layout
 

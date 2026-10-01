@@ -56,6 +56,11 @@ class TrainingConfig:
     save_checkpoints: bool = False
     # When saving checkpoints, keep only every Nth step plus the latest (None keeps all).
     checkpoint_keep_every: int | None = None
+    # When saving checkpoints, delete every older step_* checkpoint (overrides keep_every).
+    checkpoint_keep_latest: bool = False
+    # Push each checkpoint (and the final model) to this Hugging Face model repo in the background.
+    hf_checkpoint_repo: str | None = None
+    hf_checkpoint_private: bool = True
 
 @dataclass
 class Config:

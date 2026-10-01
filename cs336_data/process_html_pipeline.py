@@ -42,7 +42,7 @@ from cs336_data.toxicity import classify_nsfw, classify_toxic_speech
 from cs336_data.quality_filter import gopher_quality_filter
 from cs336_data.quality_classifier_fasttext import get_all_predictions
 from cs336_data.lsh import minhash_lsh_deduplication_tabular_files
-from cs336_data.jsonl_io import read_jsonl_compressed, write_jsonl_compressed, get_output_path
+from cs336_data.jsonl_io import read_jsonl_compressed, read_wet_file, write_jsonl_compressed, get_output_path
 from cs336_data.pipeline_metrics import build_metrics, new_latency_store, write_metrics
 from cs336_data import config
 
@@ -380,19 +380,10 @@ def process_single_file(
         else:
             current_text = text
 
-        # Step 2: PII masking
-        if enable_pii_masking and current_text:
-            t0 = time.perf_counter()
-            current_text, pii_stats = mask_all_pii(current_text)
-            _record("pii_masking", time.perf_counter() - t0)
-            stats["pii_masked"]["emails"] += pii_stats["emails"]
-            stats["pii_masked"]["phones"] += pii_stats["phones"]
-            stats["pii_masked"]["ips"] += pii_stats["ips"]
-            stats["pii_masked"]["total"] += pii_stats["total"]
+        # Filters run cheapest-and-most-selective first; PII masking (the most
+        # expensive stage) runs last, only on documents that survive every filter.
 
-        doc_data["text"] = current_text
-
-        # Step 3: Language filter
+        # Step 2: Language filter
         if enable_langid and current_text:
             t0 = time.perf_counter()
             lang_code, lang_score = identify_language(current_text)
@@ -406,7 +397,7 @@ def process_single_file(
                 stats["filtered"]["total_filtered"] += 1
                 return None
 
-        # Step 4: Gopher quality filter
+        # Step 3: Gopher quality filter
         if enable_quality_filter and current_text:
             t0 = time.perf_counter()
             quality_passed, quality_details = gopher_quality_filter(current_text)
@@ -422,7 +413,7 @@ def process_single_file(
                 stats["filtered"]["total_filtered"] += 1
                 return None
 
-        # Step 5: Fasttext quality classifier
+        # Step 4: Fasttext quality classifier
         if enable_quality_classifier and current_text:
             t0 = time.perf_counter()
             predictions = get_all_predictions(current_text)
@@ -437,7 +428,7 @@ def process_single_file(
                 stats["filtered"]["total_filtered"] += 1
                 return None
 
-        # Step 6: Content classification (NSFW + toxic)
+        # Step 5: Content classification (NSFW + toxic)
         if enable_content_classification and current_text:
             t0 = time.perf_counter()
             nsfw_label, nsfw_score = classify_nsfw(current_text)
@@ -470,6 +461,17 @@ def process_single_file(
                 stats["filtered"]["total_filtered"] += 1
                 return None
 
+        # Step 6: PII masking, on kept documents only
+        if enable_pii_masking and current_text:
+            t0 = time.perf_counter()
+            current_text, pii_stats = mask_all_pii(current_text)
+            _record("pii_masking", time.perf_counter() - t0)
+            stats["pii_masked"]["emails"] += pii_stats["emails"]
+            stats["pii_masked"]["phones"] += pii_stats["phones"]
+            stats["pii_masked"]["ips"] += pii_stats["ips"]
+            stats["pii_masked"]["total"] += pii_stats["total"]
+
+        doc_data["text"] = current_text
         stats["filtered"]["kept"] += 1
         return doc_data
 
@@ -658,8 +660,11 @@ def process_single_file(
 
         del output_data
     else:
-        # Keep JSONL input path behavior as-is (already row-limited during read).
-        df_dict = read_jsonl_compressed(input_path, text_column, max_rows=max_rows)
+        # JSONL and Common Crawl WET inputs are read whole (already row-limited during read).
+        if input_format == "wet":
+            df_dict = read_wet_file(input_path, max_rows=max_rows)
+        else:
+            df_dict = read_jsonl_compressed(input_path, text_column, max_rows=max_rows)
         if text_column not in df_dict:
             print(f"  Warning: Column '{text_column}' not found in {input_path}")
             return stats
@@ -1662,9 +1667,9 @@ if __name__ == "__main__":
     parser.add_argument(
         "--input-format",
         type=str,
-        choices=["parquet", "jsonl"],
+        choices=["parquet", "jsonl", "wet"],
         default="parquet",
-        help="Input file format: 'parquet' or 'jsonl' (supports .jsonl, .jsonl.gz, .jsonl.zst)"
+        help="Input file format: 'parquet', 'jsonl' (.jsonl, .jsonl.gz, .jsonl.zst) or 'wet' (Common Crawl .warc.wet.gz)"
     )
     parser.add_argument(
         "--output-format",
