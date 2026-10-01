@@ -8,7 +8,6 @@ Built on [Stanford CS336 Assignment 4 (Data)](./data_assign.pdf). Every number b
 |---|---|
 | Datasets | [ViratGarg/pile_filtered_13B](https://huggingface.co/datasets/ViratGarg/pile_filtered_13B), [ViratGarg/pile_unfiltered_13B](https://huggingface.co/datasets/ViratGarg/pile_unfiltered_13B) |
 | Trained models (25k steps, every 2k-step checkpoint) | [ViratGarg/cs336-a4-filtered-25k](https://huggingface.co/ViratGarg/cs336-a4-filtered-25k), [ViratGarg/cs336-a4-unfiltered-25k](https://huggingface.co/ViratGarg/cs336-a4-unfiltered-25k) |
-| Earlier model | [ViratGarg/gpt-model](https://huggingface.co/ViratGarg/gpt-model) |
 | Experiment tracking | [W&B project `cs336-data`](https://wandb.ai/gargvirat5-iiit-hyderabad/cs336-data) |
 
 ## Highlights
@@ -18,7 +17,7 @@ Built on [Stanford CS336 Assignment 4 (Data)](./data_assign.pdf). Every number b
 | **Perplexity on clean web text (Paloma C4)** | **31.7** with filtered data vs 35.1 without: 9.7% lower (loss 3.455 vs 3.558), same 162M model, same 3.3B tokens, same seed |
 | **Compute efficiency** | The unfiltered run needs **≈1.43× the training compute** to reach the filtered run's loss |
 | **More natural text** | Median GPT-2 perplexity of generations **9.74 vs 10.89**; filtered text reads more naturally on 30 of 50 prompts |
-| **Pipeline throughput** | **≈970 documents/s** per 8-CPU task: **2.9 min per GB of raw text** (≈21 GB/hour), 1.6 min/GB with 16 workers |
+| **Pipeline throughput** | **≈970 documents/s** per 8-CPU task on Intel Xeon E5-2640 v4 nodes: **2.9 min per GB of raw text** (≈21 GB/hour), 1.6 min/GB with 16 workers ([hardware](#hardware)) |
 | **Dedup optimisation** | MinHash-LSH dedup **15.3× faster** (73 min → 4.8 min) with bit-identical output |
 | **Scale** | 22.0M Pile documents filtered across 19 parallel cluster tasks into two token-matched 13.59B-token datasets |
 
@@ -78,7 +77,22 @@ Production run on shards 180–209 (30 shards, 4 workers, 2,860.7 s, 853.7 rows/
 
 ## Benchmarks
 
-Controlled runs on shards 300+ (not part of the training data) on Intel Xeon E5-2640 v4 nodes (2 sockets × 10 cores, 2 hardware threads per core), with production filter settings unless stated.
+Controlled runs on shards 300+ (not part of the training data) on the cluster nodes described in [Hardware](#hardware), with production filter settings unless stated.
+
+### Hardware
+
+All data processing ran as SLURM jobs on the `u22` partition of IIIT Hyderabad's Ada cluster (CPU details checked with `lscpu` on a node that ran production tasks):
+
+| | Data processing (each cluster node) |
+|---|---|
+| CPU | 2 × Intel Xeon E5-2640 v4 @ 2.40 GHz (Broadwell, turbo up to 3.4 GHz) |
+| Cores / threads | 20 cores, 40 hardware threads (2 threads per core) |
+| Memory | 128 GB |
+| Allocation per task | 8 SLURM CPUs (hardware threads) and 40 GB RAM for the filtering tasks behind the throughput figures (`jobs/matched_new_shards.sh`); 4 CPUs and 48 GB for the shards 180–209 run (`run_pipeline.sh`). One worker process per CPU; each worker peaks at ~3 GB (fastText models) |
+| Storage | network home directory for code and models; node-local SSD scratch (~500 GB free) for staging, deleted after upload |
+| Parallelism | up to 19 tasks at once, spread over about 10 nodes (several tasks per node); nodes were shared with other users' jobs |
+
+Training ran separately on one NVIDIA RTX 3090 (24 GB, bf16) in a workstation with 16 CPU threads and 94 GB RAM.
 
 ### Worker scaling
 
